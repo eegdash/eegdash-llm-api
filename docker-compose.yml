@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  tagger-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-4-turbo}
+      # Cache directory - uses /tmp by default, can be overridden
+      - CACHE_DIR=${CACHE_DIR:-/tmp/eegdash-llm-api/cache}
+      # Optional: Override library's default config paths if needed
+      # - FEW_SHOT_PATH=/custom/path/few_shot_examples.json
+      # - PROMPT_PATH=/custom/path/prompt.md
+    volumes:
+      # Persist cache data between restarts
+      - cache-data:/tmp/eegdash-llm-api/cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  cache-data:
