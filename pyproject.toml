@@ -27,6 +27,9 @@ dependencies = [
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.23.0",
     "pydantic>=2.0.0",
+    # Queue and database
+    "psycopg[binary]>=3.1.0",  # Postgres driver (async-capable)
+    "pymongo>=4.6.0",          # MongoDB driver for tag updates
     # Local path for development (use git URL for production after pushing changes)
     "eegdash-tagger @ file:///Users/kuntalkokate/neuroscience_work/eegdash-llm-tagger",
 ]

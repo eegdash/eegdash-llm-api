@@ -3,12 +3,16 @@ EEGDash LLM Tagger API Service.
 
 FastAPI application providing REST endpoints for dataset tagging
 with caching and orchestration.
+
+Supports two modes:
+1. Synchronous: POST /api/v1/tag (blocks until tagging complete)
+2. Asynchronous: POST /api/v1/tag/enqueue (fire-and-forget, worker processes later)
 """
 import os
 import hashlib
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -17,6 +21,7 @@ from eegdash_tagger.tagging import OpenRouterTagger
 
 from ..services.cache import TaggingCache
 from ..services.orchestrator import TaggingOrchestrator
+from ..services.queue import TaggingQueue
 
 
 def compute_config_hash(few_shot_path: Path, prompt_path: Path) -> str:
@@ -44,6 +49,8 @@ def compute_config_hash(few_shot_path: Path, prompt_path: Path) -> str:
 # Global instances
 orchestrator: Optional[TaggingOrchestrator] = None
 cache: Optional[TaggingCache] = None
+queue: Optional[TaggingQueue] = None
+queue_enabled: bool = False
 
 
 @asynccontextmanager
@@ -51,13 +58,14 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan manager.
 
-    Initializes cache, tagger, and orchestrator on startup.
+    Initializes cache, tagger, orchestrator, and optionally the queue on startup.
     Uses default paths from the eegdash-llm-tagger library package.
     """
-    global orchestrator, cache
+    global orchestrator, cache, queue, queue_enabled
 
     api_key = os.getenv('OPENROUTER_API_KEY')
     model = os.getenv('LLM_MODEL', 'openai/gpt-4-turbo')
+    postgres_url = os.getenv('POSTGRES_URL')
 
     # Cache paths - these are for the API service's own caching
     cache_dir = Path(os.getenv('CACHE_DIR', '/tmp/eegdash-llm-api/cache'))
@@ -94,9 +102,22 @@ async def lifespan(app: FastAPI):
         abstract_cache_path=abstract_cache_path
     )
 
+    # Initialize queue if Postgres is configured
+    if postgres_url:
+        try:
+            queue = TaggingQueue(postgres_url)
+            await queue.initialize()
+            queue_enabled = True
+        except Exception as e:
+            import logging
+            logging.warning(f"Queue initialization failed: {e}. Enqueue endpoints will be disabled.")
+            queue_enabled = False
+
     yield
 
-    # Cleanup (if needed)
+    # Cleanup
+    if queue:
+        await queue.close()
 
 
 app = FastAPI(
@@ -143,6 +164,57 @@ class HealthResponse(BaseModel):
     status: str
     cache_entries: int
     config_hash: Optional[str]
+    queue_enabled: bool = False
+
+
+# Queue Request/Response Models (for async tagging)
+
+class EnqueueRequest(BaseModel):
+    """Request model for enqueueing a tagging job."""
+    dataset_id: str
+    source_url: str
+    metadata_snapshot: dict[str, Any]  # Pre-extracted metadata from ingestion
+
+
+class EnqueueResponse(BaseModel):
+    """Response model for enqueue operation."""
+    status: str  # "queued" or "duplicate"
+    job_id: int
+    dataset_id: str
+    is_new: bool
+
+
+class BatchEnqueueRequest(BaseModel):
+    """Request model for batch enqueueing."""
+    datasets: list[EnqueueRequest]
+
+
+class BatchEnqueueResponse(BaseModel):
+    """Response model for batch enqueue."""
+    queued: int
+    duplicates: int
+    total: int
+
+
+class QueueStatsResponse(BaseModel):
+    """Response model for queue statistics."""
+    pending: int
+    processing: int
+    completed: int
+    failed: int
+    ready_to_process: int
+
+
+class JobStatusResponse(BaseModel):
+    """Response model for job status."""
+    job_id: Optional[int]
+    dataset_id: str
+    status: Optional[str]  # pending, processing, completed, failed
+    attempts: Optional[int]
+    created_at: Optional[str]
+    completed_at: Optional[str]
+    result: Optional[dict]
+    error: Optional[str]
 
 
 # API Endpoints
@@ -289,7 +361,8 @@ async def health():
     return HealthResponse(
         status="healthy",
         cache_entries=len(cache._cache) if cache else 0,
-        config_hash=cache.config_hash if cache else None
+        config_hash=cache.config_hash if cache else None,
+        queue_enabled=queue_enabled
     )
 
 
@@ -301,15 +374,177 @@ async def root():
     Returns:
         API info and available endpoints
     """
+    endpoints = {
+        "tag_sync": "POST /api/v1/tag",
+        "get_cached": "GET /api/v1/tags/{dataset_id}",
+        "cache_stats": "GET /api/v1/cache/stats",
+        "cache_entries": "GET /api/v1/cache/entries",
+        "clear_cache": "DELETE /api/v1/cache",
+        "health": "GET /health",
+    }
+
+    # Add queue endpoints if enabled
+    if queue_enabled:
+        endpoints.update({
+            "enqueue": "POST /api/v1/tag/enqueue",
+            "enqueue_batch": "POST /api/v1/tag/enqueue/batch",
+            "queue_stats": "GET /api/v1/queue/stats",
+            "job_status": "GET /api/v1/queue/status/{dataset_id}",
+        })
+
     return {
         "name": "EEGDash LLM Tagger API",
         "version": "1.0.0",
-        "endpoints": {
-            "tag": "POST /api/v1/tag",
-            "get_cached": "GET /api/v1/tags/{dataset_id}",
-            "cache_stats": "GET /api/v1/cache/stats",
-            "cache_entries": "GET /api/v1/cache/entries",
-            "clear_cache": "DELETE /api/v1/cache",
-            "health": "GET /health"
-        }
+        "queue_enabled": queue_enabled,
+        "endpoints": endpoints
     }
+
+
+# =============================================================================
+# Queue Endpoints (Async Tagging)
+# =============================================================================
+
+@app.post("/api/v1/tag/enqueue", response_model=EnqueueResponse)
+async def enqueue_tagging_job(req: EnqueueRequest):
+    """
+    Enqueue a dataset for async tagging (fire-and-forget).
+
+    The job is added to a queue and processed by a background worker.
+    Use this for non-blocking tagging during ingestion pipelines.
+
+    Args:
+        req: EnqueueRequest with dataset_id, source_url, and metadata_snapshot
+
+    Returns:
+        EnqueueResponse with job_id and queue status
+
+    Raises:
+        HTTPException: 503 if queue is not enabled
+    """
+    if not queue_enabled or not queue:
+        raise HTTPException(
+            status_code=503,
+            detail="Queue not enabled. Set POSTGRES_URL environment variable."
+        )
+
+    job_id, is_new = await queue.enqueue(
+        dataset_id=req.dataset_id,
+        source_url=req.source_url,
+        metadata_snapshot=req.metadata_snapshot,
+    )
+
+    return EnqueueResponse(
+        status="queued" if is_new else "duplicate",
+        job_id=job_id,
+        dataset_id=req.dataset_id,
+        is_new=is_new,
+    )
+
+
+@app.post("/api/v1/tag/enqueue/batch", response_model=BatchEnqueueResponse)
+async def enqueue_batch(req: BatchEnqueueRequest):
+    """
+    Enqueue multiple datasets for async tagging.
+
+    Idempotent: duplicate jobs (same dataset_id + metadata_hash) are skipped.
+
+    Args:
+        req: BatchEnqueueRequest with list of datasets
+
+    Returns:
+        BatchEnqueueResponse with counts of queued and duplicates
+
+    Raises:
+        HTTPException: 503 if queue is not enabled
+    """
+    if not queue_enabled or not queue:
+        raise HTTPException(
+            status_code=503,
+            detail="Queue not enabled. Set POSTGRES_URL environment variable."
+        )
+
+    jobs = [
+        {
+            "dataset_id": ds.dataset_id,
+            "source_url": ds.source_url,
+            "metadata_snapshot": ds.metadata_snapshot,
+        }
+        for ds in req.datasets
+    ]
+
+    result = await queue.enqueue_batch(jobs)
+
+    return BatchEnqueueResponse(
+        queued=result["queued"],
+        duplicates=result["duplicates"],
+        total=len(req.datasets),
+    )
+
+
+@app.get("/api/v1/queue/stats", response_model=QueueStatsResponse)
+async def queue_stats():
+    """
+    Get queue statistics.
+
+    Returns:
+        QueueStatsResponse with job counts by status
+
+    Raises:
+        HTTPException: 503 if queue is not enabled
+    """
+    if not queue_enabled or not queue:
+        raise HTTPException(
+            status_code=503,
+            detail="Queue not enabled. Set POSTGRES_URL environment variable."
+        )
+
+    stats = await queue.get_stats()
+
+    return QueueStatsResponse(
+        pending=stats["pending"],
+        processing=stats["processing"],
+        completed=stats["completed"],
+        failed=stats["failed"],
+        ready_to_process=stats["ready_to_process"],
+    )
+
+
+@app.get("/api/v1/queue/status/{dataset_id}", response_model=JobStatusResponse)
+async def job_status(dataset_id: str):
+    """
+    Get status of the most recent tagging job for a dataset.
+
+    Args:
+        dataset_id: Dataset identifier
+
+    Returns:
+        JobStatusResponse with job details
+
+    Raises:
+        HTTPException: 503 if queue is not enabled
+        HTTPException: 404 if no jobs found for dataset
+    """
+    if not queue_enabled or not queue:
+        raise HTTPException(
+            status_code=503,
+            detail="Queue not enabled. Set POSTGRES_URL environment variable."
+        )
+
+    status = await queue.get_job_status(dataset_id)
+
+    if not status:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No tagging jobs found for dataset: {dataset_id}"
+        )
+
+    return JobStatusResponse(
+        job_id=status.get("job_id"),
+        dataset_id=dataset_id,
+        status=status.get("status"),
+        attempts=status.get("attempts"),
+        created_at=status.get("created_at"),
+        completed_at=status.get("completed_at"),
+        result=status.get("result"),
+        error=status.get("error"),
+    )
