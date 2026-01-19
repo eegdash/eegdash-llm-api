@@ -1,0 +1,27 @@
+{
+  "sample_metadata": {
+    "title": "Visual Perception EEG Study",
+    "dataset_description": "Name: Visual Study\nAuthors: Test Author\nBIDSVersion: 1.6.0",
+    "readme": "This study investigates visual perception in healthy adults using EEG. Participants viewed images while brain activity was recorded.",
+    "participants_overview": "age: [20-30], sex: [M, F], n=20",
+    "tasks": ["visual", "rest"],
+    "events": ["stimulus_onset", "response"],
+    "paper_abstract": ""
+  },
+  "sample_tagging_result": {
+    "pathology": ["Healthy"],
+    "modality": ["Visual"],
+    "type": ["Perception"],
+    "confidence": {
+      "pathology": 0.9,
+      "modality": 0.85,
+      "type": 0.8
+    },
+    "reasoning": {
+      "few_shot_analysis": "Similar to visual perception examples in training set",
+      "metadata_analysis": "README mentions visual stimuli and perception study",
+      "paper_abstract_analysis": "No abstract provided",
+      "decision_summary": "Clear visual perception study with healthy participants"
+    }
+  }
+}

@@ -258,7 +258,7 @@ async def clear_cache():
     return {"status": "cleared", "message": "Cache has been cleared"}
 
 
-@app.delete("/api/v1/cache/{cache_key}")
+@app.delete("/api/v1/cache/{cache_key:path}")
 async def delete_cache_entry(cache_key: str):
     """
     Delete a specific cache entry.
