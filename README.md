@@ -302,6 +302,211 @@ docker-compose exec tagger-api bash
 cat /tmp/eegdash-llm-api/cache/tagging_cache.json | python -m json.tool
 ```
 
+## Testing the Async Queue Workflow (Local Development)
+
+The async workflow uses Postgres for job queuing and updates MongoDB via HTTP API. This is useful for batch processing datasets without blocking.
+
+### Prerequisites
+
+1. **Postgres** running locally (for job queue)
+2. **EEGDash API** access (for MongoDB updates via HTTP)
+3. **OpenRouter API key**
+
+### Step 1: Start Postgres
+
+```bash
+# Start Postgres in Docker
+docker run -d \
+  --name eegdash-postgres \
+  -e POSTGRES_USER=eegdash \
+  -e POSTGRES_PASSWORD=eegdash123 \
+  -e POSTGRES_DB=eegdash_queue \
+  -p 5432:5432 \
+  postgres:15-alpine
+```
+
+### Step 2: Configure Environment
+
+Create/update `.env` in `eegdash-llm-api/`:
+
+```bash
+# Required: OpenRouter API key
+OPENROUTER_API_KEY="your-openrouter-api-key"
+
+# Required: Postgres URL for job queue
+POSTGRES_URL=postgresql://eegdash:eegdash123@localhost:5432/eegdash_queue
+
+# Required: EEGDash API for MongoDB updates (HTTP mode - safer)
+EEGDASH_API_URL=https://data.eegdash.org
+EEGDASH_ADMIN_TOKEN=your-admin-token
+
+# Optional: Override config paths
+FEW_SHOT_PATH=/path/to/eegdash-llm-tagger/data/processed/few_shot_examples.json
+PROMPT_PATH=/path/to/eegdash-llm-tagger/prompt.md
+
+# Optional: LLM model
+LLM_MODEL=openai/gpt-4-turbo
+```
+
+### Step 3: Start the API Server
+
+```bash
+cd eegdash-llm-api
+uv run uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Step 4: Verify Queue is Enabled
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected response should include `"queue_enabled": true`.
+
+### Step 5: Enqueue a Tagging Job
+
+```bash
+curl -X POST http://localhost:8000/api/v1/tag/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataset_id": "ds003645",
+    "source_url": "https://github.com/OpenNeuroDatasets/ds003645"
+  }'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "job_id": 1,
+  "dataset_id": "ds003645",
+  "message": "Job queued for processing"
+}
+```
+
+### Step 6: Check Queue Status
+
+```bash
+curl http://localhost:8000/api/v1/queue/stats
+```
+
+Response:
+```json
+{
+  "pending": 1,
+  "processing": 0,
+  "completed": 0,
+  "failed": 0,
+  "ready_to_process": 1
+}
+```
+
+### Step 7: Run the Worker (Process Jobs)
+
+In a separate terminal:
+
+```bash
+cd eegdash-llm-api
+
+# Run worker to process one job
+uv run python -c "
+import asyncio
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+from src.services.worker import TaggingWorker
+
+async def run_once():
+    worker = TaggingWorker(
+        postgres_url=os.environ['POSTGRES_URL'],
+        eegdash_api_url=os.environ['EEGDASH_API_URL'],
+        eegdash_admin_token=os.environ['EEGDASH_ADMIN_TOKEN'],
+        openrouter_api_key=os.environ['OPENROUTER_API_KEY'],
+        model=os.environ.get('LLM_MODEL', 'openai/gpt-4-turbo'),
+        worker_id='test-worker',
+    )
+
+    await worker.initialize()
+
+    job = await worker._queue.claim_job(worker.worker_id)
+    if job:
+        print(f'Processing job {job.id} for {job.dataset_id}')
+        await worker._process_job(job)
+        print('Job processed!')
+    else:
+        print('No jobs in queue')
+
+    await worker.shutdown()
+
+asyncio.run(run_once())
+"
+```
+
+### Step 8: Verify MongoDB Update
+
+```bash
+# Check the dataset in MongoDB (read-only GET)
+curl -s "https://data.eegdash.org/api/eegdash/datasets/ds003645" | python3 -m json.tool
+```
+
+You should see new `tags` and `tagger_meta` fields:
+
+```json
+{
+  "data": {
+    "dataset_id": "ds003645",
+    "tags": {
+      "pathology": ["Healthy"],
+      "modality": ["Visual"],
+      "type": ["Perception"],
+      "confidence": { "pathology": 0.7, "modality": 0.9, "type": 0.9 },
+      "reasoning": { ... }
+    },
+    "tagger_meta": {
+      "config_hash": "17f35c0d70bcdd4e",
+      "metadata_hash": "99822e9d4040ec4f",
+      "model": "openai/gpt-4-turbo",
+      "tagged_at": "2026-01-20T08:04:10.118641+00:00"
+    }
+  }
+}
+```
+
+### Running Worker Continuously
+
+To run the worker as a continuous process (processes jobs as they arrive):
+
+```bash
+cd eegdash-llm-api
+uv run python -m src.services.worker
+```
+
+The worker will:
+- Poll the queue every 5 seconds
+- Process jobs as they arrive
+- Update MongoDB via HTTP API (safe - checks dataset exists first)
+- Handle graceful shutdown on Ctrl+C
+
+### Queue Endpoints Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/tag/enqueue` | POST | Add job to queue |
+| `/api/v1/queue/stats` | GET | Queue statistics |
+| `/api/v1/queue/jobs` | GET | List queued jobs |
+| `/api/v1/queue/jobs/{job_id}` | GET | Get specific job |
+
+### Cleanup
+
+```bash
+# Stop Postgres
+docker stop eegdash-postgres
+docker rm eegdash-postgres
+```
+
+---
+
 ## Environment Variables Reference
 
 | Variable | Required | Default | Description |
@@ -311,6 +516,10 @@ cat /tmp/eegdash-llm-api/cache/tagging_cache.json | python -m json.tool
 | `CACHE_DIR` | No | `/tmp/eegdash-llm-api/cache` | Cache directory path |
 | `FEW_SHOT_PATH` | No | (library default) | Override few-shot examples path |
 | `PROMPT_PATH` | No | (library default) | Override prompt file path |
+| `POSTGRES_URL` | No* | - | Postgres URL for async queue (*required for async mode) |
+| `EEGDASH_API_URL` | No* | - | EEGDash API URL (*required for worker HTTP mode) |
+| `EEGDASH_ADMIN_TOKEN` | No* | - | Admin token for MongoDB writes (*required for worker HTTP mode) |
+| `MONGODB_URL` | No* | - | Direct MongoDB URL (*alternative to HTTP mode) |
 
 ## Architecture
 

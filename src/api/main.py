@@ -8,6 +8,10 @@ Supports two modes:
 1. Synchronous: POST /api/v1/tag (blocks until tagging complete)
 2. Asynchronous: POST /api/v1/tag/enqueue (fire-and-forget, worker processes later)
 """
+# Load .env file if present (for local development)
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import hashlib
 from pathlib import Path
