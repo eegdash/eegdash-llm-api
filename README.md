@@ -507,6 +507,265 @@ docker rm eegdash-postgres
 
 ---
 
+## Dataset Hooks
+
+The hooks framework lets you write custom logic that reads a dataset from the EEGDash database, does any processing you want, and writes arbitrary fields back — without touching any boilerplate.
+
+### How It Works
+
+```
+┌──────────────────────────────────────────────┐
+│  Your Hook                                   │
+│                                              │
+│  class MyHook(DatasetHook):                  │
+│      def process(dataset_id, dataset) -> dict│
+│          # YOUR LOGIC HERE                   │
+│          return {"field": "value"}           │
+└───────────────────┬──────────────────────────┘
+                    │ inherits from
+┌───────────────────▼──────────────────────────┐
+│  DatasetHook (src/hooks/base.py)             │
+│                                              │
+│  run() handles:                              │
+│    CLI args, env vars, DB fetch,             │
+│    call process(), write results,            │
+│    error handling, cleanup                   │
+└───────────────────┬──────────────────────────┘
+                    │ HTTP requests
+┌───────────────────▼──────────────────────────┐
+│  EEGDash API → MongoDB                       │
+│                                              │
+│  GET  /api/{db}/datasets/{id}  (read)        │
+│  POST /admin/{db}/datasets     (write $set)  │
+└──────────────────────────────────────────────┘
+```
+
+1. `run()` parses CLI args and loads env vars (`EEGDASH_API_URL`, `EEGDASH_ADMIN_TOKEN`)
+2. Fetches the **full dataset document** from MongoDB via the EEGDash REST API
+3. Passes it to **your `process()` method** along with the dataset ID
+4. Takes whatever dict you return and writes those fields to MongoDB using `$set` (only the fields you return are touched; everything else is preserved)
+5. Reads the document back for verification (in `--verbose` mode)
+
+### Writing a Hook
+
+Create a single Python file with one class and one method:
+
+```python
+# my_hook.py
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # adjust depth as needed
+
+from src.hooks.base import DatasetHook
+
+
+class MyHook(DatasetHook):
+    name = "my-hook"
+
+    def process(self, dataset_id: str, dataset: dict) -> dict:
+        """Return fields to write to MongoDB.
+
+        Args:
+            dataset_id: e.g. "ds004362"
+            dataset: Full MongoDB document (title, readme, tags, etc.)
+
+        Returns:
+            Dict of fields to $set. Return {} to skip writing.
+        """
+        # Do whatever you want here:
+        #   - Call an LLM API
+        #   - Run a computation
+        #   - Look up external data
+        title = dataset.get("title", "")
+        return {
+            "my_custom_field": {
+                "result": f"Processed: {title}",
+            }
+        }
+
+
+if __name__ == "__main__":
+    MyHook.run()
+```
+
+### Running a Hook
+
+```bash
+cd eegdash-llm-api
+
+# Dry run — fetches dataset and runs process(), but does NOT write
+uv run python my_hook.py ds004362 --dry-run --verbose
+
+# Actual write
+uv run python my_hook.py ds004362 --verbose
+
+# Override database name
+uv run python my_hook.py ds004362 --database eegdash_staging
+```
+
+### CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `dataset_id` (positional) | Dataset identifier, e.g. `ds004362` |
+| `--dry-run` | Run `process()` but skip the DB write |
+| `--verbose` | Enable debug logging (shows HTTP requests and read-back) |
+| `--database DB` | Override database name (default: `eegdash` or `MONGODB_DATABASE` env var) |
+
+### Required Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `EEGDASH_ADMIN_TOKEN` | Bearer token for write access to the EEGDash API (required) |
+| `EEGDASH_API_URL` | API base URL (default: `https://data.eegdash.org`) |
+
+### Example: LLM Classifier Hook
+
+```python
+from datetime import datetime, timezone
+from src.hooks.base import DatasetHook
+import openai
+
+
+class LLMClassifierHook(DatasetHook):
+    name = "llm-classifier"
+
+    def process(self, dataset_id: str, dataset: dict) -> dict:
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[{
+                "role": "user",
+                "content": f"Classify this EEG dataset: {dataset.get('title', '')}"
+            }],
+        )
+        classification = response.choices[0].message.content
+
+        return {
+            "tags": {
+                "pathology": [classification],
+            },
+            "my_llm_meta": {
+                "model": "gpt-4",
+                "classified_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
+
+if __name__ == "__main__":
+    LLMClassifierHook.run()
+```
+
+### Built-in Example
+
+A dummy hook is included for testing the framework and DB connectivity:
+
+```bash
+# Verify the hook framework works end-to-end
+uv run python src/hooks/examples/dummy_hook.py ds004362 --dry-run --verbose
+
+# Actually write a dummy_test field
+uv run python src/hooks/examples/dummy_hook.py ds004362 --verbose
+```
+
+### Using Hooks From an External App
+
+If you're building a separate application and want to use the hook framework, there are two approaches:
+
+#### Option A: Install `eegdash-llm-api` as a dependency (recommended)
+
+Add the package to your project's dependencies:
+
+```bash
+# pip
+pip install git+https://github.com/kuntalkokate/eegdash-llm-api.git
+
+# uv
+uv add git+https://github.com/kuntalkokate/eegdash-llm-api.git
+
+# or from a local checkout
+pip install -e /path/to/eegdash-llm-api
+```
+
+Then import and use `DatasetHook` directly:
+
+```python
+# my_app/classify.py
+from src.hooks.base import DatasetHook
+
+
+class MyClassifier(DatasetHook):
+    name = "my-classifier"
+
+    def process(self, dataset_id: str, dataset: dict) -> dict:
+        # Your app's logic
+        return {"my_field": "my_value"}
+
+
+if __name__ == "__main__":
+    MyClassifier.run()
+```
+
+This gives you the full framework: CLI, `--dry-run`, `--verbose`, DB connection, error handling, verification — all inherited.
+
+#### Option B: Use `MongoDBHttpUpdater` directly (more control)
+
+If you want full control over the flow (e.g., process many datasets in a loop, integrate into an existing CLI, or run as part of a web server), skip the `DatasetHook` base class and use the updater directly:
+
+```python
+# my_app/batch_process.py
+import os
+from dotenv import load_dotenv
+from src.services.mongodb_http_updater import MongoDBHttpUpdater
+
+load_dotenv()
+
+updater = MongoDBHttpUpdater(
+    api_url=os.environ.get("EEGDASH_API_URL", "https://data.eegdash.org"),
+    admin_token=os.environ["EEGDASH_ADMIN_TOKEN"],
+    database="eegdash",
+)
+updater.connect()
+
+try:
+    # Read
+    dataset = updater.get_dataset("ds004362")
+
+    # Your logic
+    result = my_custom_function(dataset)
+
+    # Write any fields
+    updater.update_fields("ds004362", {
+        "my_analysis": result,
+        "tags": {"pathology": ["Healthy"]},
+    })
+finally:
+    updater.close()
+```
+
+The `MongoDBHttpUpdater` only depends on `httpx` and the standard library, so it's lightweight to use standalone. The key methods are:
+
+| Method | Description |
+|--------|-------------|
+| `connect()` | Initialize HTTP client |
+| `close()` | Close HTTP client |
+| `get_dataset(dataset_id)` | Fetch full document from MongoDB (returns `dict` or `None`) |
+| `dataset_exists(dataset_id)` | Check if dataset exists (returns `bool`) |
+| `update_fields(dataset_id, fields)` | Write any fields to the document via `$set` |
+| `update_tags(dataset_id, tags, ...)` | Write tags specifically (used by the LLM tagger) |
+| `get_tags(dataset_id)` | Read just the `tags` and `tagger_meta` fields |
+
+### Key Files
+
+| File | Description |
+|------|-------------|
+| `src/hooks/base.py` | `DatasetHook` base class — all boilerplate lives here |
+| `src/hooks/__init__.py` | Package init, exports `DatasetHook` |
+| `src/hooks/examples/dummy_hook.py` | Working example hook |
+| `src/services/mongodb_http_updater.py` | HTTP client for reading/writing MongoDB via EEGDash API |
+
+---
+
 ## Environment Variables Reference
 
 | Variable | Required | Default | Description |
