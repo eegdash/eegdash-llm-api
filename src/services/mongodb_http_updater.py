@@ -285,6 +285,48 @@ class MongoDBHttpUpdater:
             logger.error(f"HTTP error updating dataset {dataset_id}: {e}")
             return False
 
+    def update_fields(self, dataset_id: str, fields: dict[str, Any]) -> bool:
+        """Update arbitrary fields for a dataset.
+
+        SAFETY: First checks if dataset exists. Will NOT create new documents.
+        Uses the admin POST endpoint which wraps the payload in $set.
+
+        Args:
+            dataset_id: Dataset identifier
+            fields: Dict of fields to set on the document
+
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        if not self._client:
+            raise RuntimeError("Not connected - call connect() first")
+
+        if not self.dataset_exists(dataset_id):
+            logger.warning(f"Dataset {dataset_id} not found in MongoDB - skipping update")
+            return False
+
+        update_payload = {"dataset_id": dataset_id, **fields}
+
+        url = f"{self.api_url}/admin/{self.database}/datasets"
+
+        try:
+            response = self._client.post(
+                url,
+                json=update_payload,
+                headers=self._get_headers(with_auth=True),
+            )
+
+            if response.status_code == 200:
+                logger.info(f"Updated fields for {dataset_id}")
+                return True
+            else:
+                logger.error(f"Failed to update {dataset_id}: {response.status_code} - {response.text}")
+                return False
+
+        except httpx.RequestError as e:
+            logger.error(f"HTTP error updating dataset {dataset_id}: {e}")
+            return False
+
     def get_tags(self, dataset_id: str) -> Optional[dict[str, Any]]:
         """Get current tags for a dataset.
 
