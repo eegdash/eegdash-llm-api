@@ -43,6 +43,7 @@ from typing import Any, Optional, Protocol
 
 from eegdash_tagger.tagging import OpenRouterTagger
 
+from .cache import TaggingCache, GROUND_TRUTH_HASH
 from .queue import TaggingQueue, TaggingJob
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,8 @@ class TaggingWorker:
         openrouter_api_key: Optional[str] = None,
         model: str = "openai/gpt-4-turbo",
         worker_id: str = "worker-1",
+        # Cache settings
+        cache_path: Optional[Path] = None,
     ):
         """Initialize worker.
 
@@ -126,6 +129,7 @@ class TaggingWorker:
             openrouter_api_key: OpenRouter API key (defaults to env var)
             model: LLM model to use
             worker_id: Unique identifier for this worker
+            cache_path: Path to cache file (for ground truth and LLM result caching)
         """
         self.postgres_url = postgres_url
         self.mongodb_url = mongodb_url
@@ -136,6 +140,7 @@ class TaggingWorker:
         self.openrouter_api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
         self.model = model
         self.worker_id = worker_id
+        self.cache_path = cache_path
 
         self._queue: Optional[TaggingQueue] = None
         self._mongodb: Optional[MongoUpdaterProtocol] = None
@@ -147,16 +152,25 @@ class TaggingWorker:
         # Track current config hash for provenance
         self._config_hash: Optional[str] = None
 
+        # Cache for ground truth and LLM results
+        self._cache: Optional[TaggingCache] = None
+
     @staticmethod
-    def _compute_config_hash(few_shot_path: Optional[Path], prompt_path: Optional[Path]) -> str:
-        """Compute hash of few-shot examples + prompt for provenance tracking."""
+    def _compute_config_hash(few_shot_path: Optional[Path], model: str) -> str:
+        """Compute hash of few-shot examples + model for provenance tracking.
+
+        The config hash changes when:
+        - few_shot_examples.json content changes
+        - model name changes
+
+        Prompt changes do NOT invalidate cache.
+        """
         hasher = hashlib.sha256()
 
         if few_shot_path and few_shot_path.exists():
             hasher.update(few_shot_path.read_bytes())
 
-        if prompt_path and prompt_path.exists():
-            hasher.update(prompt_path.read_bytes())
+        hasher.update(model.encode())
 
         return hasher.hexdigest()[:16]
 
@@ -216,12 +230,19 @@ class TaggingWorker:
             prompt_path=prompt_path_obj,
         )
 
-        # Compute config hash for provenance (hash of few-shot + prompt files)
-        self._config_hash = self._compute_config_hash(few_shot_path_obj, prompt_path_obj)
+        # Compute config hash for provenance (hash of few-shot + model)
+        self._config_hash = self._compute_config_hash(few_shot_path_obj, self.model)
+
+        # Initialize cache if path provided
+        if self.cache_path:
+            self._cache = TaggingCache(cache_path=self.cache_path, config_hash=self._config_hash)
+            gt_count = len(self._cache.list_ground_truth_datasets())
+            logger.info(f"Cache initialized: {self._cache.stats()['total_entries']} entries, {gt_count} ground truth")
 
         mode = "HTTP API" if self._use_http_api else "direct MongoDB"
         config_hash_short = self._config_hash[:8] if self._config_hash else "unknown"
-        logger.info(f"Worker {self.worker_id} initialized (mode: {mode}, config_hash={config_hash_short}...)")
+        cache_status = f", cache={self.cache_path}" if self._cache else ", no cache"
+        logger.info(f"Worker {self.worker_id} initialized (mode: {mode}, config_hash={config_hash_short}...{cache_status})")
 
     async def shutdown(self) -> None:
         """Gracefully shutdown worker."""
@@ -296,17 +317,91 @@ class TaggingWorker:
     async def _process_job(self, job: TaggingJob) -> None:
         """Process a single tagging job.
 
+        Checks cache in this order:
+        1. Ground truth (never invalidated)
+        2. Regular cache (keyed by metadata + config + model)
+        3. LLM call (if no cache hit)
+
         Args:
             job: The job to process
         """
         logger.info(f"Processing job {job.id} for {job.dataset_id} (attempt {job.attempts})")
 
         try:
-            # Tag using snapshot metadata (no cloning needed!)
+            # 1. Check ground truth first (never invalidated)
+            if self._cache:
+                gt_result = self._cache.get_ground_truth(job.dataset_id)
+                if gt_result:
+                    logger.info(f"Ground truth hit for {job.dataset_id}")
+
+                    # Update MongoDB with ground truth
+                    updated = self._mongodb.update_tags(
+                        dataset_id=job.dataset_id,
+                        tags=gt_result,
+                        config_hash=GROUND_TRUTH_HASH,
+                        metadata_hash=GROUND_TRUTH_HASH,
+                        model="ground_truth",
+                        reasoning=gt_result.get("reasoning"),
+                    )
+
+                    if not updated:
+                        logger.warning(f"Dataset {job.dataset_id} not found in MongoDB")
+
+                    await self._queue.complete_job(job.id, {
+                        "tags": gt_result,
+                        "config_hash": GROUND_TRUTH_HASH,
+                        "metadata_hash": GROUND_TRUTH_HASH,
+                        "mongodb_updated": updated,
+                        "from_ground_truth": True,
+                    })
+
+                    logger.info(f"Job {job.id} completed for {job.dataset_id} (ground truth)")
+                    return
+
+            # Compute metadata hash for cache key and provenance
+            metadata_hash = self._queue.compute_metadata_hash(job.metadata_snapshot)
+
+            # 2. Check regular cache
+            if self._cache and job.metadata_snapshot:
+                cache_key = self._cache.build_key(job.dataset_id, job.metadata_snapshot, self.model)
+                cached_result = self._cache.get(cache_key)
+
+                if cached_result:
+                    logger.info(f"Cache hit for {job.dataset_id}")
+
+                    # Update MongoDB with cached result
+                    updated = self._mongodb.update_tags(
+                        dataset_id=job.dataset_id,
+                        tags=cached_result,
+                        config_hash=self._config_hash,
+                        metadata_hash=metadata_hash,
+                        model=self.model,
+                        reasoning=cached_result.get("reasoning"),
+                    )
+
+                    if not updated:
+                        logger.warning(f"Dataset {job.dataset_id} not found in MongoDB")
+
+                    await self._queue.complete_job(job.id, {
+                        "tags": cached_result,
+                        "config_hash": self._config_hash,
+                        "metadata_hash": metadata_hash,
+                        "mongodb_updated": updated,
+                        "from_cache": True,
+                    })
+
+                    logger.info(f"Job {job.id} completed for {job.dataset_id} (cached)")
+                    return
+
+            # 3. No cache hit - call LLM
+            logger.info(f"Cache miss for {job.dataset_id}, calling LLM...")
             result = await self._tag_from_metadata(job.metadata_snapshot)
 
-            # Compute metadata hash for provenance
-            metadata_hash = self._queue.compute_metadata_hash(job.metadata_snapshot)
+            # Store in cache after successful tagging
+            if self._cache and job.metadata_snapshot:
+                cache_key = self._cache.build_key(job.dataset_id, job.metadata_snapshot, self.model)
+                self._cache.set(cache_key, result, job.metadata_snapshot)
+                logger.debug(f"Cached result for {job.dataset_id}")
 
             # Update MongoDB with tags
             updated = self._mongodb.update_tags(
@@ -327,9 +422,10 @@ class TaggingWorker:
                 "config_hash": self._config_hash,
                 "metadata_hash": metadata_hash,
                 "mongodb_updated": updated,
+                "from_llm": True,
             })
 
-            logger.info(f"Job {job.id} completed for {job.dataset_id}")
+            logger.info(f"Job {job.id} completed for {job.dataset_id} (LLM)")
 
         except Exception as e:
             logger.error(f"Job {job.id} failed: {e}")
@@ -418,6 +514,13 @@ async def main():
     else:
         print("Using direct MongoDB connection mode")
 
+    # Cache configuration (optional but recommended for ground truth support)
+    cache_dir = os.environ.get("CACHE_DIR", "/tmp/eegdash-llm-api/cache")
+    cache_path = Path(cache_dir) / "tagging_cache.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Using cache: {cache_path}")
+
     worker = TaggingWorker(
         postgres_url=postgres_url,
         mongodb_url=mongodb_url,
@@ -428,6 +531,7 @@ async def main():
         openrouter_api_key=openrouter_api_key,
         model=model,
         worker_id=worker_id,
+        cache_path=cache_path,
     )
 
     await worker.run()

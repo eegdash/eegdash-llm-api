@@ -28,13 +28,20 @@ from ..services.orchestrator import TaggingOrchestrator
 from ..services.queue import TaggingQueue
 
 
-def compute_config_hash(few_shot_path: Path, prompt_path: Path) -> str:
+def compute_config_hash(few_shot_path: Path, model: str) -> str:
     """
-    Compute hash of few-shot examples + prompt for cache invalidation.
+    Compute hash of few-shot examples + model for cache invalidation.
+
+    The config hash changes when:
+    - few_shot_examples.json content changes
+    - model name changes
+
+    Prompt changes do NOT invalidate cache (prompt changes are less
+    likely to change tagging behavior significantly).
 
     Args:
         few_shot_path: Path to few_shot_examples.json
-        prompt_path: Path to prompt.md
+        model: Model name (e.g., 'openai/gpt-4-turbo')
 
     Returns:
         First 16 characters of combined SHA-256 hash
@@ -44,8 +51,7 @@ def compute_config_hash(few_shot_path: Path, prompt_path: Path) -> str:
     if few_shot_path.exists():
         hasher.update(few_shot_path.read_bytes())
 
-    if prompt_path.exists():
-        hasher.update(prompt_path.read_bytes())
+    hasher.update(model.encode())
 
     return hasher.hexdigest()[:16]
 
@@ -85,8 +91,8 @@ async def lifespan(app: FastAPI):
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY environment variable required")
 
-    # Compute config hash for cache invalidation
-    config_hash = compute_config_hash(few_shot_path, prompt_path)
+    # Compute config hash for cache invalidation (based on few_shot_examples + model)
+    config_hash = compute_config_hash(few_shot_path, model)
 
     # Initialize components
     cache = TaggingCache(cache_path=cache_path, config_hash=config_hash)

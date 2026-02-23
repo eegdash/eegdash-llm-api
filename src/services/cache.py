@@ -3,12 +3,17 @@ Content-addressable cache for LLM tagging results.
 
 This module implements a write-through cache with content-addressable keys
 for automatic invalidation when inputs change.
+
+Also supports ground truth entries that are never invalidated.
 """
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# Sentinel hash for ground truth entries (never invalidated)
+GROUND_TRUTH_HASH = "GROUND_TRUTH"
 
 
 class TaggingCache:
@@ -216,6 +221,69 @@ class TaggingCache:
                 "pathology": entry.get("result", {}).get("pathology", []),
                 "modality": entry.get("result", {}).get("modality", []),
                 "type": entry.get("result", {}).get("type", []),
+                "is_ground_truth": entry.get("is_ground_truth", False),
             })
 
         return entries
+
+    def set_ground_truth(self, dataset_id: str, result: Dict[str, Any]) -> None:
+        """
+        Store ground truth that won't be invalidated by config/metadata changes.
+
+        Ground truth entries use sentinel hashes (GROUND_TRUTH) so they are
+        never invalidated when config or metadata changes.
+
+        Args:
+            dataset_id: Dataset identifier
+            result: Ground truth tags (pathology, modality, type, confidence)
+        """
+        key = f"{dataset_id}:{GROUND_TRUTH_HASH}:{GROUND_TRUTH_HASH}:ground_truth"
+        self._cache[key] = {
+            "result": result,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "is_ground_truth": True,
+        }
+        self._save()
+
+    def get_ground_truth(self, dataset_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Check for ground truth entry for a dataset.
+
+        Args:
+            dataset_id: Dataset identifier
+
+        Returns:
+            Ground truth result dict or None if not found
+        """
+        key = f"{dataset_id}:{GROUND_TRUTH_HASH}:{GROUND_TRUTH_HASH}:ground_truth"
+        entry = self._cache.get(key)
+        if entry and entry.get("is_ground_truth"):
+            return entry.get("result")
+        return None
+
+    def has_ground_truth(self, dataset_id: str) -> bool:
+        """
+        Check if dataset has ground truth entry.
+
+        Args:
+            dataset_id: Dataset identifier
+
+        Returns:
+            True if ground truth exists for this dataset
+        """
+        return self.get_ground_truth(dataset_id) is not None
+
+    def list_ground_truth_datasets(self) -> list[str]:
+        """
+        List all dataset IDs that have ground truth entries.
+
+        Returns:
+            List of dataset IDs with ground truth
+        """
+        datasets = []
+        for key, entry in self._cache.items():
+            if entry.get("is_ground_truth"):
+                parts = key.split(":")
+                if parts:
+                    datasets.append(parts[0])
+        return sorted(datasets)
