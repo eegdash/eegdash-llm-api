@@ -45,6 +45,12 @@ services:
     # Internal only — public access is through Caddy (tagger.eegdash.org).
     expose:
       - "8000"
+    # Host LOOPBACK bind: lets trusted users reach the API over an SSH tunnel
+    # (ssh -L 8000:localhost:8000 sccn@indexing) without any public exposure.
+    # 127.0.0.1 means it is NOT reachable from the network/internet — only via
+    # the tunnel or on the host itself. Caddy still reaches it by container name.
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
       LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
