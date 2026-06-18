@@ -2,6 +2,8 @@
 
 REST API service for tagging EEG/MEG datasets using LLM-based classification. This service wraps the [eegdash-llm-tagger](https://github.com/kuntalkokate/eegdash-llm-tagger) library with caching and orchestration.
 
+> **Production deployment:** the full stack (Postgres queue + API + worker) is deployed on the `indexing` host. For deploy steps and day-to-day usage commands see **[`deploy/README.md`](deploy/README.md)**; for the architecture, security model, and test plan see **[`deploy/DEPLOYMENT_PLAN.md`](deploy/DEPLOYMENT_PLAN.md)**. The rest of this file documents local/dev usage.
+
 ## Prerequisites
 
 - Docker and Docker Compose installed on the server

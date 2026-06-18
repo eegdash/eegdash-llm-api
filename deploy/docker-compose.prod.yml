@@ -1,0 +1,130 @@
+# Production stack for the EEGDash LLM Tagger.
+#
+#   postgres  -> durable job queue
+#   api       -> FastAPI service (sync /tag + async enqueue + cache endpoints)
+#   worker    -> claims queued jobs, tags, writes tags back to MongoDB
+#
+# The api/worker join the existing `eegdash-competition_backend` network so that
+# Caddy can reach `tagger-api` by name and the worker can reach `eegdash-api`
+# (the data.eegdash.org API) directly without a public round-trip.
+#
+# Bring up:   docker-compose -p eegdash-llm-tagger -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
+# NOTE: run a SINGLE worker. >1 replica shares the worker cache volume and
+# corrupts cache.py's shared .tmp file. Scaling needs a code-level cache fix.
+name: eegdash-llm-tagger
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tagger-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tagger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-eegdash_queue}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tagger} -d ${POSTGRES_DB:-eegdash_queue}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.prod
+    image: eegdash-llm-tagger:latest
+    container_name: tagger-api
+    # Internal only — public access is through Caddy (tagger.eegdash.org).
+    expose:
+      - "8000"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-tagger}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-eegdash_queue}
+      # Vendored tagger config baked into the image (the wheel doesn't ship it).
+      FEW_SHOT_PATH: /app/config/few_shot_examples.json
+      PROMPT_PATH: /app/config/prompt.md
+      CACHE_DIR: /data/cache
+    volumes:
+      # Separate cache volume from the worker. cache.py persists via a single
+      # shared `<cache>.tmp` filename + atomic rename; two processes writing the
+      # SAME volume race on that temp file and can corrupt/lose entries. The
+      # sync API and the worker therefore get independent cache volumes.
+      - cache-api:/data/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+      - edge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+  worker:
+    image: eegdash-llm-tagger:latest
+    container_name: tagger-worker
+    command: ["python", "-m", "src.services.worker"]
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-tagger}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-eegdash_queue}
+      # HTTP write-back to the EEGDash API. Internal service name avoids the
+      # public TLS round-trip; override to https://data.eegdash.org if needed.
+      EEGDASH_API_URL: ${EEGDASH_API_URL:-http://eegdash-api:3000}
+      EEGDASH_ADMIN_TOKEN: ${EEGDASH_ADMIN_TOKEN:?set in .env}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-eegdash}
+      # Vendored tagger config baked into the image (same files as the api, so the
+      # config_hash matches across both).
+      FEW_SHOT_PATH: /app/config/few_shot_examples.json
+      PROMPT_PATH: /app/config/prompt.md
+      CACHE_DIR: /data/cache
+      WORKER_ID: tagger-worker-1
+    volumes:
+      # Worker-owned cache (ground truth + LLM results live here). Prepopulate
+      # ground truth into THIS volume. Do NOT `--scale worker=N` (>1): replicas
+      # share this volume and collide on cache.py's single `.tmp` file, which
+      # can corrupt the cache. Scaling workers safely needs a code-level cache
+      # fix (out of scope). Run a single worker.
+      - cache-worker:/data/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+      - edge
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+volumes:
+  pg-data:
+  cache-api:
+  cache-worker:
+
+networks:
+  internal:
+    driver: bridge
+  edge:
+    external: true
+    name: eegdash-competition_backend

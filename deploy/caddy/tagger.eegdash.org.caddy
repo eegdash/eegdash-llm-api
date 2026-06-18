@@ -1,0 +1,73 @@
+# Caddy site block for the EEGDash LLM Tagger API.
+#
+# STRICT ORDERING — do NOT append this block until DNS resolves, or Caddy will
+# hammer ACME for a non-resolving name and can hit Let's Encrypt failed-validation
+# rate limits (shared with data.eegdash.org's ACME account):
+#   1) Create A record:  tagger.eegdash.org  ->  169.228.38.92
+#   2) Verify from the host AND externally:  dig +short tagger.eegdash.org   (== 169.228.38.92)
+#   3) Back up the Caddyfile, append this block, then:
+#        docker exec caddy caddy validate --config /etc/caddy/Caddyfile
+#        docker exec caddy caddy reload   --config /etc/caddy/Caddyfile
+# A failed `validate` must NOT be reloaded; the running config stays live either way.
+#
+# EDGE AUTH (important): /api/v1/tag and /tag/enqueue spend the server's OpenRouter
+# key, and DELETE /api/v1/cache wipes the cache — all unauthenticated in the app.
+# The X-API-Key gate below blocks anonymous internet abuse (mirrors the Grafana
+# basicauth pattern already on this host). Set a strong key: openssl rand -hex 32.
+# NOTE: this gates the PUBLIC path only; containers on eegdash-competition_backend
+# can still reach tagger-api:8000 directly, bypassing Caddy (accepted trust boundary).
+
+tagger.eegdash.org {
+  encode gzip zstd
+
+  # Tagging requests/responses are small JSON; cap the body at the edge. A 4MB
+  # batch-enqueue body can still be thousands of jobs — keep enqueue internal-only
+  # or tighten this if the batch endpoint is ever exposed.
+  request_body {
+    max_size 4MB
+  }
+
+  header {
+    -Server
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  }
+
+  # Block requests with empty/missing Host header.
+  @no_host {
+    not header Host *
+  }
+  respond @no_host 400
+
+  # --- Edge API-key gate (stock Caddy, no plugin) ---
+  # Replace REPLACE_WITH_LONG_RANDOM_TOKEN. Callers must send: X-API-Key: <token>.
+  # To use HTTP basic-auth instead (like /grafana), swap this for a basic_auth block.
+  @noauth not header X-API-Key "REPLACE_WITH_LONG_RANDOM_TOKEN"
+  respond @noauth "Forbidden" 403
+
+  reverse_proxy tagger-api:8000 {
+    health_uri /health
+    health_interval 30s
+    health_timeout 5s
+
+    # Sync /api/v1/tag clones a repo + calls the LLM (can take 30-60s).
+    transport http {
+      read_timeout 120s
+      write_timeout 120s
+    }
+
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+
+  log {
+    output file /var/log/caddy/tagger-access.log {
+      roll_size 100mb
+      roll_keep 5
+    }
+    format json
+  }
+}

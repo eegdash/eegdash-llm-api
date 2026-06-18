@@ -1,0 +1,42 @@
+# Production image for the EEGDash LLM Tagger API + worker.
+#
+# Differs from the dev Dockerfile in one important way: it installs the
+# `eegdash-tagger` library from its public GitHub repo instead of the local
+# filesystem path pinned in pyproject.toml (which only exists on a developer's
+# machine). The sed rewrite keeps the dev pyproject untouched while making the
+# image build anywhere.
+FROM python:3.11-slim
+
+# git    -> the sync /api/v1/tag endpoint shallow-clones dataset repos at runtime
+# curl   -> container healthcheck
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependency metadata first for better layer caching.
+# README.md is required: pyproject sets `readme = "README.md"` and hatchling
+# validates it exists when building the wheel (non-editable `pip install .`).
+COPY pyproject.toml README.md ./
+COPY src/ src/
+
+# Rewrite the local-path tagger dependency to the public git URL, then install.
+# Pinned to the main branch; change @main to a tag/commit to freeze the version.
+RUN sed -i -E 's|"eegdash-tagger @ file://[^"]*"|"eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main"|' pyproject.toml && \
+    pip install --no-cache-dir . "httpx>=0.24.0"
+# httpx is required at runtime by mongodb_http_updater (worker write-back) but is
+# only listed under pyproject's [dev] extra — install it explicitly here.
+
+# The eegdash-tagger wheel does NOT ship its few-shot/prompt data files, and the
+# library's default paths resolve to a non-existent location when installed
+# non-editably. Bake the vendored config in; compose sets FEW_SHOT_PATH/PROMPT_PATH.
+COPY deploy/vendor-config/few_shot_examples.json deploy/vendor-config/prompt.md /app/config/
+
+# Cache dir is mounted as a volume in compose (CACHE_DIR=/data/cache)
+RUN mkdir -p /data/cache
+
+EXPOSE 8000
+
+# Default command runs the API; the worker service overrides this in compose.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
