@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eegdash-llm-api"
-version = "1.0.1"
+version = "1.0.2"
 description = "API service for EEGDash LLM Tagger with caching and orchestration"
 readme = "README.md"
 license = "MIT"
@@ -31,7 +31,7 @@ dependencies = [
     "psycopg[binary]>=3.1.0",  # Postgres driver (async-capable)
     "pymongo>=4.6.0",          # MongoDB driver for tag updates
     # Immutable library revision tested with this service release.
-    "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@14d46b5ae30d86cec0084eb90f796b22231be4fb",
+    "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@c2f289a084ec904d0fee7281a6114bcdb6e9c5fb",
     "httpx>=0.24.0",
     "python-dotenv>=1.2.1",
 ]

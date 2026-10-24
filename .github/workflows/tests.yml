@@ -34,4 +34,4 @@ jobs:
           uv venv /tmp/wheel-check
           uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
           cd /tmp
-          /tmp/wheel-check/bin/python -c 'from src.api.main import app; from eegdash_tagger.tagging import OpenRouterTagger; assert app.version == "1.0.1"; assert len(OpenRouterTagger(api_key="configuration-only").few_shot_examples) == 15'
+          /tmp/wheel-check/bin/python -c 'from src.api.main import app; from eegdash_tagger.tagging import OpenRouterTagger; assert app.version == "1.0.2"; assert len(OpenRouterTagger(api_key="configuration-only").few_shot_examples) == 15'

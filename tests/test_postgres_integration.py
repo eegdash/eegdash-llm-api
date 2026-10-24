@@ -99,6 +99,8 @@ async def test_real_queue_retries_model_and_write_failures_then_completes(tmp_pa
         assert state["writes"][0]["tags"]["pathology"] == ["Healthy"]
         provenance = state["writes"][0]["tagger_meta"]["request_provenance"]
         assert provenance["model"] == "fixture-model"
+        assert provenance["annotation_origin"] == "machine_generated"
+        assert provenance["review_status_at_generation"] == "unreviewed"
         assert provenance["provider_response_model"] == "fixture-reported-model"
         assert provenance["provider_response_id"] == "fixture-response-id"
         assert len(provenance["request_hash"]) == 64

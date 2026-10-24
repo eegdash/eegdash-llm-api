@@ -290,7 +290,7 @@ wheels = [
 
 [[package]]
 name = "eegdash-llm-api"
-version = "1.0.1"
+version = "1.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "eegdash-tagger" },
@@ -313,7 +313,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "eegdash-tagger", git = "https://github.com/eegdash/eegdash-llm-tagger.git?rev=14d46b5ae30d86cec0084eb90f796b22231be4fb" },
+    { name = "eegdash-tagger", git = "https://github.com/eegdash/eegdash-llm-tagger.git?rev=c2f289a084ec904d0fee7281a6114bcdb6e9c5fb" },
     { name = "fastapi", specifier = ">=0.100.0" },
     { name = "httpx", specifier = ">=0.24.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.1.0" },
@@ -330,8 +330,8 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "eegdash-tagger"
-version = "0.1.1"
-source = { git = "https://github.com/eegdash/eegdash-llm-tagger.git?rev=14d46b5ae30d86cec0084eb90f796b22231be4fb#14d46b5ae30d86cec0084eb90f796b22231be4fb" }
+version = "0.1.2"
+source = { git = "https://github.com/eegdash/eegdash-llm-tagger.git?rev=c2f289a084ec904d0fee7281a6114bcdb6e9c5fb#c2f289a084ec904d0fee7281a6114bcdb6e9c5fb" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "pandas" },

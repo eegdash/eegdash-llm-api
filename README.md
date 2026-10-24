@@ -4,6 +4,20 @@ REST API service for tagging EEG/MEG datasets using LLM-based classification. Th
 
 > **Production deployment:** the full stack (Postgres queue + API + worker) is deployed on the `indexing` host. For deploy steps and day-to-day usage commands see **[`deploy/README.md`](deploy/README.md)**; for the architecture, security model, and test plan see **[`deploy/DEPLOYMENT_PLAN.md`](deploy/DEPLOYMENT_PLAN.md)**. The rest of this file documents local/dev usage.
 
+## Version 1.0.2 release changes
+
+The service pins library 0.1.2 and includes its corrected deployment prompt. MCI
+no longer maps to dementia, a procedure alone no longer establishes a diagnosis,
+and the confidence rubric and primary-label order are explicit. New library
+request provenance marks machine origin and unreviewed-at-generation status;
+these fields survive cache, API responses and catalogue writes. Consuming
+interfaces must display this information and provide their own human-review
+workflow; this release does not change the existing public catalogue UI.
+The 15 examples and allowed label lists are unchanged. These changes do not
+retag production or establish improved model accuracy.
+
+For a single deployment and retagging recipe, see [deployment instructions](deploy/README.md).
+
 ## Version 1.0.1 release changes
 
 This version repairs the release paths identified in the manuscript audit. It is
