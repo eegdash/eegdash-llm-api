@@ -28,12 +28,11 @@ Environment variables:
 
     Optional:
         MONGODB_DATABASE - Database name (default: eegdash)
-        LLM_MODEL - Model to use (default: openai/gpt-4-turbo)
+        LLM_MODEL - Model to use (default: openai/gpt-5.2)
         WORKER_ID - Unique worker identifier
 """
 
 import asyncio
-import hashlib
 import logging
 import os
 import signal
@@ -43,8 +42,9 @@ from typing import Any, Optional, Protocol
 
 from eegdash_tagger.tagging import OpenRouterTagger
 
-from .cache import TaggingCache, GROUND_TRUTH_HASH
+from .cache import TaggingCache, GROUND_TRUTH_HASH, is_failed_result
 from .queue import TaggingQueue, TaggingJob
+from .config import compute_config_hash, config_hash_for_tagger
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,8 @@ class MongoUpdaterProtocol(Protocol):
         config_hash: str,
         metadata_hash: str,
         model: str,
-        reasoning: Optional[dict[str, str]] = None,
+        reasoning: Optional[dict[str, Any]] = None,
+        request_provenance: Optional[dict[str, Any]] = None,
     ) -> bool: ...
 
 
@@ -112,7 +113,7 @@ class TaggingWorker:
         eegdash_admin_token: Optional[str] = None,
         # Common settings
         openrouter_api_key: Optional[str] = None,
-        model: str = "openai/gpt-4-turbo",
+        model: str = "openai/gpt-5.2",
         worker_id: str = "worker-1",
         # Cache settings
         cache_path: Optional[Path] = None,
@@ -155,24 +156,8 @@ class TaggingWorker:
         # Cache for ground truth and LLM results
         self._cache: Optional[TaggingCache] = None
 
-    @staticmethod
-    def _compute_config_hash(few_shot_path: Optional[Path], model: str) -> str:
-        """Compute hash of few-shot examples + model for provenance tracking.
-
-        The config hash changes when:
-        - few_shot_examples.json content changes
-        - model name changes
-
-        Prompt changes do NOT invalidate cache.
-        """
-        hasher = hashlib.sha256()
-
-        if few_shot_path and few_shot_path.exists():
-            hasher.update(few_shot_path.read_bytes())
-
-        hasher.update(model.encode())
-
-        return hasher.hexdigest()[:16]
+    # Kept as a public compatibility alias; API and worker use one implementation.
+    _compute_config_hash = staticmethod(compute_config_hash)
 
     def _create_mongodb_updater(self) -> MongoUpdaterProtocol:
         """Create the appropriate MongoDB updater based on configuration."""
@@ -230,8 +215,7 @@ class TaggingWorker:
             prompt_path=prompt_path_obj,
         )
 
-        # Compute config hash for provenance (hash of few-shot + model)
-        self._config_hash = self._compute_config_hash(few_shot_path_obj, self.model)
+        self._config_hash = config_hash_for_tagger(self._tagger)
 
         # Initialize cache if path provided
         if self.cache_path:
@@ -328,6 +312,10 @@ class TaggingWorker:
         logger.info(f"Processing job {job.id} for {job.dataset_id} (attempt {job.attempts})")
 
         try:
+            self._config_hash = config_hash_for_tagger(self._tagger)
+            if self._cache:
+                self._cache.config_hash = self._config_hash
+
             # 1. Check ground truth first (never invalidated)
             if self._cache:
                 gt_result = self._cache.get_ground_truth(job.dataset_id)
@@ -342,10 +330,11 @@ class TaggingWorker:
                         metadata_hash=GROUND_TRUTH_HASH,
                         model="ground_truth",
                         reasoning=gt_result.get("reasoning"),
+                        request_provenance=gt_result.get("tagger_meta"),
                     )
 
                     if not updated:
-                        logger.warning(f"Dataset {job.dataset_id} not found in MongoDB")
+                        raise RuntimeError(f"Catalogue write failed for {job.dataset_id}")
 
                     await self._queue.complete_job(job.id, {
                         "tags": gt_result,
@@ -377,10 +366,11 @@ class TaggingWorker:
                         metadata_hash=metadata_hash,
                         model=self.model,
                         reasoning=cached_result.get("reasoning"),
+                        request_provenance=cached_result.get("tagger_meta"),
                     )
 
                     if not updated:
-                        logger.warning(f"Dataset {job.dataset_id} not found in MongoDB")
+                        raise RuntimeError(f"Catalogue write failed for {job.dataset_id}")
 
                     await self._queue.complete_job(job.id, {
                         "tags": cached_result,
@@ -395,7 +385,7 @@ class TaggingWorker:
 
             # 3. No cache hit - call LLM
             logger.info(f"Cache miss for {job.dataset_id}, calling LLM...")
-            result = await self._tag_from_metadata(job.metadata_snapshot)
+            result = await self._tag_from_metadata(job.metadata_snapshot, dataset_id=job.dataset_id)
 
             # Store in cache after successful tagging
             if self._cache and job.metadata_snapshot:
@@ -411,10 +401,11 @@ class TaggingWorker:
                 metadata_hash=metadata_hash,
                 model=self.model,
                 reasoning=result.get("reasoning"),
+                request_provenance=result.get("tagger_meta"),
             )
 
             if not updated:
-                logger.warning(f"Dataset {job.dataset_id} not found in MongoDB")
+                raise RuntimeError(f"Catalogue write failed for {job.dataset_id}")
 
             # Mark job as complete
             await self._queue.complete_job(job.id, {
@@ -431,7 +422,7 @@ class TaggingWorker:
             logger.error(f"Job {job.id} failed: {e}")
             await self._queue.fail_job(job.id, str(e))
 
-    async def _tag_from_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+    async def _tag_from_metadata(self, metadata: dict[str, Any], dataset_id: str) -> dict[str, Any]:
         """Tag a dataset using pre-extracted metadata.
 
         This is the key optimization: we use the snapshot metadata from
@@ -439,21 +430,19 @@ class TaggingWorker:
 
         Args:
             metadata: Dataset metadata snapshot
+            dataset_id: Output record identifier (excluded from the model input)
 
         Returns:
             Tagging result with pathology, modality, type, confidence, reasoning
         """
         # The tagger expects metadata in a specific format
         # Convert to the format expected by tag_with_details
-        result = self._tagger.tag_with_details(metadata)
+        result = self._tagger.tag_with_details(metadata, dataset_id=dataset_id)
+        if is_failed_result(result):
+            raise RuntimeError("Tagger returned a failed-call envelope")
 
-        return {
-            "pathology": result.get("pathology", ["Unknown"]),
-            "modality": result.get("modality", ["Unknown"]),
-            "type": result.get("type", ["Unknown"]),
-            "confidence": result.get("confidence", {}),
-            "reasoning": result.get("reasoning", {}),
-        }
+        # Keep the exact input snapshot and request provenance returned by the library.
+        return result
 
 
 async def main():
@@ -473,7 +462,7 @@ async def main():
     # Get configuration from environment
     postgres_url = os.environ.get("POSTGRES_URL")
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-    model = os.environ.get("LLM_MODEL", "openai/gpt-4-turbo")
+    model = os.environ.get("LLM_MODEL", "openai/gpt-5.2")
     worker_id = os.environ.get("WORKER_ID", f"worker-{os.getpid()}")
 
     # MongoDB connection options

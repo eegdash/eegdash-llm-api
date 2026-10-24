@@ -4,8 +4,8 @@ This module uses the EEGDash API (https://data.eegdash.org) instead of
 direct MongoDB connections. This is safer and works without exposing
 MongoDB ports.
 
-Safety: Always checks if dataset exists before updating to prevent
-accidental creation of new documents.
+Checks existence before updating. The remote POST endpoint is an upsert, so
+this precheck cannot prevent insertion if a dataset is concurrently deleted.
 
 API Endpoints used:
 - GET  /api/{db}/datasets/{dataset_id}  - Check if dataset exists
@@ -28,7 +28,8 @@ class MongoDBHttpUpdater:
     """Updates MongoDB with LLM-generated tags via HTTP API.
 
     Uses the EEGDash API instead of direct MongoDB connection.
-    Performs safe updates that only modify existing datasets.
+    Checks that the dataset exists before writing; see the concurrent-delete
+    limitation in the module documentation.
 
     Usage:
         updater = MongoDBHttpUpdater(
@@ -211,11 +212,12 @@ class MongoDBHttpUpdater:
         config_hash: str,
         metadata_hash: str,
         model: str,
-        reasoning: Optional[dict[str, str]] = None,
+        reasoning: Optional[dict[str, Any]] = None,
+        request_provenance: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Update tags for a dataset.
 
-        SAFETY: First checks if dataset exists. Will NOT create new documents.
+        Checks existence before the remote upsert; concurrent deletion is not atomic.
 
         Args:
             dataset_id: Dataset identifier
@@ -224,6 +226,7 @@ class MongoDBHttpUpdater:
             metadata_hash: Metadata hash for provenance
             model: Model used for tagging
             reasoning: Optional reasoning from LLM
+            request_provenance: Library request hashes and provider-reported identifiers
 
         Returns:
             True if document was updated, False if not found or error
@@ -256,6 +259,9 @@ class MongoDBHttpUpdater:
             },
         }
 
+        if request_provenance is not None:
+            update_payload["tagger_meta"]["request_provenance"] = request_provenance
+
         # Add reasoning if provided
         if reasoning:
             update_payload["tags"]["reasoning"] = reasoning
@@ -269,26 +275,32 @@ class MongoDBHttpUpdater:
                 headers=self._get_headers(with_auth=True),
             )
 
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("updated_count", 0) > 0 or "updated" in data.get("message", "").lower():
-                    logger.info(f"Updated tags for {dataset_id}")
-                    return True
-                else:
-                    logger.info(f"Tags unchanged for {dataset_id}")
-                    return True  # Still successful, just no changes
-            else:
-                logger.error(f"Failed to update {dataset_id}: {response.status_code} - {response.text}")
-                return False
+            if response.status_code == 200 and self._confirmed_update(response.json()):
+                logger.info(f"Updated or unchanged tags for {dataset_id}")
+                return True
+            logger.error(f"Catalogue did not confirm update for {dataset_id}: HTTP {response.status_code}")
+            return False
 
         except httpx.RequestError as e:
             logger.error(f"HTTP error updating dataset {dataset_id}: {e}")
             return False
 
+    @staticmethod
+    def _confirmed_update(data: Any) -> bool:
+        """Require the documented success envelope, including unchanged writes."""
+        return (
+            isinstance(data, dict)
+            and data.get("success") is True
+            and type(data.get("inserted_count")) is int
+            and data["inserted_count"] == 0
+            and type(data.get("updated_count")) is int
+            and data["updated_count"] in (0, 1)
+        )
+
     def update_fields(self, dataset_id: str, fields: dict[str, Any]) -> bool:
         """Update arbitrary fields for a dataset.
 
-        SAFETY: First checks if dataset exists. Will NOT create new documents.
+        Checks existence before the remote upsert; concurrent deletion is not atomic.
         Uses the admin POST endpoint which wraps the payload in $set.
 
         Args:
@@ -316,12 +328,11 @@ class MongoDBHttpUpdater:
                 headers=self._get_headers(with_auth=True),
             )
 
-            if response.status_code == 200:
-                logger.info(f"Updated fields for {dataset_id}")
+            if response.status_code == 200 and self._confirmed_update(response.json()):
+                logger.info(f"Updated or unchanged fields for {dataset_id}")
                 return True
-            else:
-                logger.error(f"Failed to update {dataset_id}: {response.status_code} - {response.text}")
-                return False
+            logger.error(f"Catalogue did not confirm update for {dataset_id}: HTTP {response.status_code}")
+            return False
 
         except httpx.RequestError as e:
             logger.error(f"HTTP error updating dataset {dataset_id}: {e}")

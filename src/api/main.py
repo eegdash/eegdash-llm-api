@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import hashlib
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, Any
@@ -26,34 +25,7 @@ from eegdash_tagger.tagging import OpenRouterTagger
 from ..services.cache import TaggingCache
 from ..services.orchestrator import TaggingOrchestrator
 from ..services.queue import TaggingQueue
-
-
-def compute_config_hash(few_shot_path: Path, model: str) -> str:
-    """
-    Compute hash of few-shot examples + model for cache invalidation.
-
-    The config hash changes when:
-    - few_shot_examples.json content changes
-    - model name changes
-
-    Prompt changes do NOT invalidate cache (prompt changes are less
-    likely to change tagging behavior significantly).
-
-    Args:
-        few_shot_path: Path to few_shot_examples.json
-        model: Model name (e.g., 'openai/gpt-4-turbo')
-
-    Returns:
-        First 16 characters of combined SHA-256 hash
-    """
-    hasher = hashlib.sha256()
-
-    if few_shot_path.exists():
-        hasher.update(few_shot_path.read_bytes())
-
-    hasher.update(model.encode())
-
-    return hasher.hexdigest()[:16]
+from ..services.config import compute_config_hash, config_hash_for_tagger
 
 
 # Global instances
@@ -74,7 +46,7 @@ async def lifespan(app: FastAPI):
     global orchestrator, cache, queue, queue_enabled
 
     api_key = os.getenv('OPENROUTER_API_KEY')
-    model = os.getenv('LLM_MODEL', 'openai/gpt-4-turbo')
+    model = os.getenv('LLM_MODEL', 'openai/gpt-5.2')
     postgres_url = os.getenv('POSTGRES_URL')
 
     # Cache paths - these are for the API service's own caching
@@ -91,18 +63,15 @@ async def lifespan(app: FastAPI):
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY environment variable required")
 
-    # Compute config hash for cache invalidation (based on few_shot_examples + model)
-    config_hash = compute_config_hash(few_shot_path, model)
-
-    # Initialize components
-    cache = TaggingCache(cache_path=cache_path, config_hash=config_hash)
-
     tagger = OpenRouterTagger(
         api_key=api_key,
         model=model,
         few_shot_path=few_shot_path,
         prompt_path=prompt_path
     )
+
+    config_hash = config_hash_for_tagger(tagger)
+    cache = TaggingCache(cache_path=cache_path, config_hash=config_hash)
 
     orchestrator = TaggingOrchestrator(
         tagger=tagger,
@@ -133,7 +102,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="EEGDash LLM Tagger API",
     description="REST API for tagging EEG/MEG datasets with LLM-based classification",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan
 )
 
@@ -154,7 +123,10 @@ class TagResponse(BaseModel):
     modality: list[str]
     type: list[str]
     confidence: dict
-    reasoning: dict = {}
+    reasoning: dict[str, Any] = {}
+    model: Optional[str] = None
+    request_provenance: Optional[dict[str, Any]] = None
+    input_metadata: Optional[dict[str, Any]] = None
     from_cache: bool
     stale: bool = False
     cache_key: Optional[str] = None
@@ -248,6 +220,8 @@ async def tag_dataset(req: TagRequest):
             source_url=req.source_url,
             force_refresh=req.force_refresh
         )
+        if result.get("error") and not result.get("from_cache"):
+            raise HTTPException(status_code=502, detail=result["error"])
         return TagResponse(
             dataset_id=req.dataset_id,
             pathology=result.get('pathology', ['Unknown']),
@@ -255,21 +229,19 @@ async def tag_dataset(req: TagRequest):
             type=result.get('type', ['Unknown']),
             confidence=result.get('confidence', {}),
             reasoning=result.get('reasoning', {}),
+            model=result.get('model') or result.get('tagger_meta', {}).get('model'),
+            request_provenance=result.get('tagger_meta'),
+            input_metadata=result.get('input_metadata'),
             from_cache=result.get('from_cache', False),
             stale=result.get('stale', False),
             cache_key=result.get('cache_key'),
             error=result.get('error')
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        return TagResponse(
-            dataset_id=req.dataset_id,
-            pathology=["Unknown"],
-            modality=["Unknown"],
-            type=["Unknown"],
-            confidence={},
-            from_cache=False,
-            error=str(e)
-        )
+        raise HTTPException(status_code=502, detail="Tagging failed") from e
+
 
 
 @app.get("/api/v1/tags/{dataset_id}", response_model=TagResponse)
@@ -297,6 +269,9 @@ async def get_cached_tags(dataset_id: str):
         type=result["result"].get("type", ["Unknown"]),
         confidence=result["result"].get("confidence", {}),
         reasoning=result["result"].get("reasoning", {}),
+        model=result["result"].get("model") or result["result"].get("tagger_meta", {}).get("model"),
+        request_provenance=result["result"].get("tagger_meta"),
+        input_metadata=result["result"].get("input_metadata"),
         from_cache=True,
         stale=result.get("stale", False)
     )
@@ -404,7 +379,7 @@ async def root():
 
     return {
         "name": "EEGDash LLM Tagger API",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "queue_enabled": queue_enabled,
         "endpoints": endpoints
     }

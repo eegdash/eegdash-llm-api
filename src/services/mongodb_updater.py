@@ -118,7 +118,7 @@ class MongoDBUpdater:
         Returns:
             True if tags should be updated
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         doc = self._collection.find_one(
@@ -128,7 +128,7 @@ class MongoDBUpdater:
 
         if not doc:
             logger.debug(f"Dataset {dataset_id} not found in MongoDB")
-            return True  # No document = needs update (will be a new insert)
+            return True  # Missing tags; update_tags still refuses to insert a missing dataset.
 
         tagger_meta = doc.get("tagger_meta")
         if not tagger_meta:
@@ -156,7 +156,8 @@ class MongoDBUpdater:
         config_hash: str,
         metadata_hash: str,
         model: str,
-        reasoning: Optional[dict[str, str]] = None,
+        reasoning: Optional[dict[str, Any]] = None,
+        request_provenance: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Update tags for a dataset.
 
@@ -170,11 +171,12 @@ class MongoDBUpdater:
             metadata_hash: Metadata hash for provenance
             model: Model used for tagging
             reasoning: Optional reasoning from LLM
+            request_provenance: Library request hashes and provider-reported identifiers
 
         Returns:
             True if document was updated, False if not found
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         now = datetime.now(timezone.utc)
@@ -197,7 +199,9 @@ class MongoDBUpdater:
             }
         }
 
-        # Add reasoning if provided
+        # Add provenance and reasoning if provided
+        if request_provenance is not None:
+            update["$set"]["tagger_meta"]["request_provenance"] = request_provenance
         if reasoning:
             update["$set"]["tags"]["reasoning"] = reasoning
 
@@ -222,7 +226,8 @@ class MongoDBUpdater:
         config_hash: str,
         metadata_hash: str,
         model: str,
-        reasoning: Optional[dict[str, str]] = None,
+        reasoning: Optional[dict[str, Any]] = None,
+        request_provenance: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Update tags only if config or metadata hash differs.
 
@@ -239,7 +244,7 @@ class MongoDBUpdater:
         Returns:
             True if updated, False if no update needed or not found
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         now = datetime.now(timezone.utc)
@@ -271,6 +276,8 @@ class MongoDBUpdater:
             }
         }
 
+        if request_provenance is not None:
+            update["$set"]["tagger_meta"]["request_provenance"] = request_provenance
         if reasoning:
             update["$set"]["tags"]["reasoning"] = reasoning
 
@@ -295,7 +302,7 @@ class MongoDBUpdater:
         Returns:
             Tags dict or None if not found/no tags
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         doc = self._collection.find_one(
@@ -329,7 +336,7 @@ class MongoDBUpdater:
         Returns:
             List of dataset documents (dataset_id, source_url fields)
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         cursor = self._collection.find(
@@ -350,7 +357,7 @@ class MongoDBUpdater:
         Returns:
             Dict with counts of tagged/untagged datasets
         """
-        if not self._collection:
+        if self._collection is None:
             raise RuntimeError("Not connected to MongoDB")
 
         total = self._collection.count_documents({})

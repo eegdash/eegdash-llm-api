@@ -1,0 +1,36 @@
+name: release-checks
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    services:
+      postgres:
+        image: postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24
+        env:
+          POSTGRES_USER: tester
+          POSTGRES_PASSWORD: tester
+          POSTGRES_DB: tester
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U tester'
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen --extra dev
+      - run: uv run --extra dev pytest --cov=src
+        env:
+          TEST_POSTGRES_URL: postgresql://tester:tester@127.0.0.1:5432/tester
+      - run: uv build
+      - run: |
+          uv venv /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
+          cd /tmp
+          /tmp/wheel-check/bin/python -c 'from src.api.main import app; from eegdash_tagger.tagging import OpenRouterTagger; assert app.version == "1.0.1"; assert len(OpenRouterTagger(api_key="configuration-only").few_shot_examples) == 15'

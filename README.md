@@ -1,8 +1,52 @@
 # EEGDash LLM API
 
-REST API service for tagging EEG/MEG datasets using LLM-based classification. This service wraps the [eegdash-llm-tagger](https://github.com/kuntalkokate/eegdash-llm-tagger) library with caching and orchestration.
+REST API service for tagging EEG/MEG datasets using LLM-based classification. This service wraps the [eegdash-llm-tagger](https://github.com/eegdash/eegdash-llm-tagger) library with caching and orchestration.
 
 > **Production deployment:** the full stack (Postgres queue + API + worker) is deployed on the `indexing` host. For deploy steps and day-to-day usage commands see **[`deploy/README.md`](deploy/README.md)**; for the architecture, security model, and test plan see **[`deploy/DEPLOYMENT_PLAN.md`](deploy/DEPLOYMENT_PLAN.md)**. The rest of this file documents local/dev usage.
+
+## Version 1.0.1 release changes
+
+This version repairs the release paths identified in the manuscript audit. It is
+not automatically deployed to the existing catalogue service.
+
+- The library dependency is an immutable Git revision; `httpx` is a runtime
+  dependency. Install normally with `python -m pip install .` from this checkout.
+- Both Dockerfiles use the same pinned Python base and `requirements.lock`,
+  exported from `uv.lock`. The production configuration contains vocabulary v2
+  and 15 examples; the library also supplies installed default resources.
+- Model/transport/parse failures raise `TaggingError`. They are not cached or
+  written as `Unknown`. A synchronous failure without a valid stale result
+  returns HTTP 502; stale fallback remains explicitly marked `stale` with `error`.
+- Failed catalogue writes enter the queue's retry path and do not complete the
+  job. A successful model result may stay cached while a write is retried, avoiding
+  another paid call. Three unsuccessful attempts end in a failed job.
+- Cache identity includes the effective prompt, loaded examples, generation settings (including model and token limit), endpoint,
+  vocabulary and library version. Prompt edits invalidate the next lookup without
+  restarting. Example edits require a restart because the library loads them once.
+- The JSON cache still supports a single writer per file; keep API and worker
+  caches separate. Queue deduplication remains based on dataset and metadata:
+  retagging a completed unchanged snapshot after a configuration change requires
+  an explicit operator decision to create a new job, rather than re-enqueueing it.
+
+### Release checks
+
+```bash
+uv sync --extra dev --frozen
+uv run --extra dev pytest --cov=src
+# Optional real PostgreSQL + local HTTP fixture; use a disposable test database.
+TEST_POSTGRES_URL=postgresql://tester:tester@127.0.0.1:55432/tester uv run --extra dev pytest tests/test_postgres_integration.py
+```
+
+The integration test creates a unique schema, uses loopback fixture endpoints,
+and drops that schema afterward. It exercises a model HTTP failure, a failed
+catalogue write, and a successful retry through the real worker and Postgres
+queue, plus terminal failure after exhausting the retry budget. No real model or
+production catalogue is contacted. CI additionally checks a fresh wheel install;
+the following smoke command checks installed-package startup:
+
+```bash
+python -c 'from eegdash_tagger.tagging import OpenRouterTagger; from src.api.main import app; t=OpenRouterTagger(api_key="configuration-only"); print(app.version, len(t.few_shot_examples))'
+```
 
 ## Prerequisites
 
@@ -16,7 +60,7 @@ REST API service for tagging EEG/MEG datasets using LLM-based classification. Th
 
 ```bash
 # Clone this API repository
-git clone https://github.com/kuntalkokate/eegdash-llm-api.git
+git clone https://github.com/eegdash/eegdash-llm-api.git
 cd eegdash-llm-api
 
 # The core library will be installed automatically via pip during Docker build
@@ -39,7 +83,7 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 
 Optional variables:
 ```bash
-LLM_MODEL=openai/gpt-4-turbo    # Default model
+LLM_MODEL=openai/gpt-5.2    # Default model
 CACHE_DIR=/tmp/eegdash-llm-api/cache  # Cache location
 ```
 
@@ -242,16 +286,21 @@ server {
 
 ## Updating the Core Library
 
-When the `eegdash-llm-tagger` library is updated (new prompts, few-shot examples):
+Library upgrades are explicit. Set a reviewed immutable commit in `pyproject.toml`,
+update the vendored prompt/examples to that revision, then regenerate and test:
 
 ```bash
-# Rebuild to pull latest library version
-docker-compose build --no-cache
-docker-compose up -d
-
-# The config_hash will change automatically
-# Old cache entries will be ignored, fresh LLM calls will be made
+uv lock
+uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements.lock
+uv sync --extra dev --frozen
+uv run --extra dev pytest
+# Build only after tests pass; deployment is an operator action.
+docker compose build
 ```
+
+Rebuilding alone retains the pinned dependency. A changed effective configuration
+invalidates regular cache lookups; already completed queue jobs are still deduplicated
+by metadata, so configuration changes do not automatically re-enqueue a catalogue.
 
 ## Troubleshooting
 
@@ -347,7 +396,7 @@ FEW_SHOT_PATH=/path/to/eegdash-llm-tagger/data/processed/few_shot_examples.json
 PROMPT_PATH=/path/to/eegdash-llm-tagger/prompt.md
 
 # Optional: LLM model
-LLM_MODEL=openai/gpt-4-turbo
+LLM_MODEL=openai/gpt-5.2
 ```
 
 ### Step 3: Start the API Server
@@ -425,7 +474,7 @@ async def run_once():
         eegdash_api_url=os.environ['EEGDASH_API_URL'],
         eegdash_admin_token=os.environ['EEGDASH_ADMIN_TOKEN'],
         openrouter_api_key=os.environ['OPENROUTER_API_KEY'],
-        model=os.environ.get('LLM_MODEL', 'openai/gpt-4-turbo'),
+        model=os.environ.get('LLM_MODEL', 'openai/gpt-5.2'),
         worker_id='test-worker',
     )
 
@@ -468,7 +517,7 @@ You should see new `tags` and `tagger_meta` fields:
     "tagger_meta": {
       "config_hash": "17f35c0d70bcdd4e",
       "metadata_hash": "99822e9d4040ec4f",
-      "model": "openai/gpt-4-turbo",
+      "model": "openai/gpt-5.2",
       "tagged_at": "2026-01-20T08:04:10.118641+00:00"
     }
   }
@@ -680,10 +729,10 @@ Add the package to your project's dependencies:
 
 ```bash
 # pip
-pip install git+https://github.com/kuntalkokate/eegdash-llm-api.git
+pip install git+https://github.com/eegdash/eegdash-llm-api.git
 
 # uv
-uv add git+https://github.com/kuntalkokate/eegdash-llm-api.git
+uv add git+https://github.com/eegdash/eegdash-llm-api.git
 
 # or from a local checkout
 pip install -e /path/to/eegdash-llm-api
@@ -773,7 +822,7 @@ The `MongoDBHttpUpdater` only depends on `httpx` and the standard library, so it
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter.ai API key |
-| `LLM_MODEL` | No | `openai/gpt-4-turbo` | LLM model to use |
+| `LLM_MODEL` | No | `openai/gpt-5.2` | LLM model to use |
 | `CACHE_DIR` | No | `/tmp/eegdash-llm-api/cache` | Cache directory path |
 | `FEW_SHOT_PATH` | No | (library default) | Override few-shot examples path |
 | `PROMPT_PATH` | No | (library default) | Override prompt file path |
@@ -784,4 +833,13 @@ The `MongoDBHttpUpdater` only depends on `httpx` and the standard library, so it
 
 ## Architecture
 
-See [ARCHITECTURE.md](https://github.com/kuntalkokate/eegdash-llm-tagger/blob/main/ARCHITECTURE.md) in the core library repository for detailed system architecture.
+See [ARCHITECTURE.md](https://github.com/eegdash/eegdash-llm-tagger/blob/main/ARCHITECTURE.md) in the core library repository for detailed system architecture.
+
+Request provenance is retained in cache entries, returned as `request_provenance`
+by the HTTP API, and written under `tagger_meta.request_provenance` in the
+catalogue. These library hashes describe the actual filtered request, prompt,
+examples, vocabulary and endpoint; they are separate from the service's cache
+and queue hashes. The API also returns the filtered `input_metadata` snapshot.
+`provider_response_model` and `provider_response_id`, when present, are reported
+by the provider, not independently verified. Historical entries without this
+record remain without recovered request provenance.

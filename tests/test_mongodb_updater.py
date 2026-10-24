@@ -306,3 +306,37 @@ class TestMongoDBUpdaterConnection:
 
         mock_client.close.assert_called_once()
         assert updater._client is None
+
+
+@pytest.mark.parametrize("method,args", [
+    ("needs_update", ("ds-test", "config", "metadata")),
+    ("update_tags", ("ds-test", {}, "config", "metadata", "model")),
+    ("update_tags_conditional", ("ds-test", {}, "config", "metadata", "model")),
+    ("get_tags", ("ds-test",)),
+    ("get_untagged_datasets", ("config",)),
+    ("get_stats", ()),
+])
+def test_real_pymongo_collection_is_not_coerced_to_bool(method, args):
+    from pymongo import MongoClient
+    from pymongo.collection import Collection
+    from pymongo.results import UpdateResult
+
+    # A real PyMongo Collection rejects bool(collection). Patch I/O only, leaving
+    # its true type/boolean behavior intact; connect=False prevents networking.
+    client = MongoClient("mongodb://127.0.0.1:1", connect=False)
+    updater = MongoDBUpdater("mongodb://unused")
+    updater._collection = client["fixture"]["datasets"]
+    cursor = Mock()
+    cursor.limit.return_value = []
+    provenance = {"request_hash": "fixture-hash", "provider_response_model": "reported"}
+    try:
+        with patch.object(Collection, "find_one", return_value={"dataset_id": "ds-test"}), \
+             patch.object(Collection, "find", return_value=cursor), \
+             patch.object(Collection, "count_documents", return_value=0), \
+             patch.object(Collection, "update_one", return_value=UpdateResult({"n": 1, "nModified": 1}, True)) as update:
+            kwargs = {"request_provenance": provenance} if method.startswith("update_tags") else {}
+            getattr(updater, method)(*args, **kwargs)
+            if kwargs:
+                assert update.call_args.args[1]["$set"]["tagger_meta"]["request_provenance"] == provenance
+    finally:
+        client.close()

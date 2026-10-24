@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+**/.env
+**/.env.*
+__pycache__
+**/__pycache__
+.pytest_cache
+.coverage
+*.log
+build
+dist
+.ruff_cache
+validation
