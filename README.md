@@ -843,3 +843,14 @@ and queue hashes. The API also returns the filtered `input_metadata` snapshot.
 `provider_response_model` and `provider_response_id`, when present, are reported
 by the provider, not independently verified. Historical entries without this
 record remain without recovered request provenance.
+
+## Licence
+
+The original software and documentation in this repository are available under
+the [MIT licence](LICENSE), copyright (c) 2026 EEGDash contributors.
+
+Third-party dependencies retain their own licences. Dataset metadata and
+documentation, including source material reproduced in the vendored few-shot
+examples under `deploy/vendor-config/`, retain their original rights and licence
+terms. The MIT licence does not relicense those materials; consult the source
+dataset's licence and attribution requirements before reusing them.

@@ -26,7 +26,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   uvicorn
 dnspython==2.8.0
     # via pymongo
-eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@65891813b4dcb6c762c9727e032b119c125f2599
+eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@14d46b5ae30d86cec0084eb90f796b22231be4fb
     # via eegdash-llm-api
 fastapi==0.128.0
     # via eegdash-llm-api

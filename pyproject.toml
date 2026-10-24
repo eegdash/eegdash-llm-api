@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,6 +8,7 @@ version = "1.0.1"
 description = "API service for EEGDash LLM Tagger with caching and orchestration"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
     { name = "EEGDash Team" }
@@ -16,7 +17,6 @@ keywords = ["eeg", "meg", "neuroimaging", "tagging", "api", "llm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -31,7 +31,7 @@ dependencies = [
     "psycopg[binary]>=3.1.0",  # Postgres driver (async-capable)
     "pymongo>=4.6.0",          # MongoDB driver for tag updates
     # Immutable library revision tested with this service release.
-    "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@65891813b4dcb6c762c9727e032b119c125f2599",
+    "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@14d46b5ae30d86cec0084eb90f796b22231be4fb",
     "httpx>=0.24.0",
     "python-dotenv>=1.2.1",
 ]
