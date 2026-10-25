@@ -4,6 +4,16 @@ REST API service for tagging EEG/MEG datasets using LLM-based classification. Th
 
 > **Production deployment:** the full stack (Postgres queue + API + worker) is deployed on the `indexing` host. For deploy steps and day-to-day usage commands see **[`deploy/README.md`](deploy/README.md)**; for the architecture, security model, and test plan see **[`deploy/DEPLOYMENT_PLAN.md`](deploy/DEPLOYMENT_PLAN.md)**. The rest of this file documents local/dev usage.
 
+## Version 1.0.3: ingestion snapshot adapter
+
+`python -m src.ingestion dataset.json > enqueue-request.json` prepares a batch
+request offline. It maps source `name`/`description` to canonical
+`title`/`dataset_description`, preserves supplied task/event evidence, and excludes
+structured catalogue tags, diagnosis declarations and study-domain labels.
+Canonical fields take precedence; absent source URLs and empty evidence are rejected.
+See [the producer contract](deploy/INGESTION.md). This does not install a scheduler,
+fetch missing evidence, deliver jobs, or change the public ingestion workflow.
+
 ## Version 1.0.2 release changes
 
 The service pins library 0.1.2 and includes its corrected deployment prompt. MCI

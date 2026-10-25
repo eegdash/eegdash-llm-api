@@ -15,7 +15,7 @@ EEGDash API). Runs as a **separate compose project** on the existing
 | `vendor-config/` | `few_shot_examples.json` + `prompt.md` at `/app/deploy/vendor-config`, matching v2 and 15 examples |
 | `caddy/tagger.eegdash.org.caddy` | Optional public site block (X-API-Key gate); only if exposing publicly |
 
-Version 1.0.2 is a release candidate; deployment to the existing service is a separate operator action. The HTTP updater prechecks existence, but the server POST is an upsert: concurrent deletion can still lead to insertion. It now requires the server's explicit success envelope and rejects unexpected insertion reports.
+Version 1.0.3 is a release candidate; deployment to the existing service is a separate operator action. The HTTP updater prechecks existence, but the server POST is an upsert: concurrent deletion can still lead to insertion. It now requires the server's explicit success envelope and rejects unexpected insertion reports.
 
 ## Deployment prerequisites
 

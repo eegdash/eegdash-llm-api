@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="EEGDash LLM Tagger API",
     description="REST API for tagging EEG/MEG datasets with LLM-based classification",
-    version="1.0.2",
+    version="1.0.3",
     lifespan=lifespan
 )
 
@@ -379,7 +379,7 @@ async def root():
 
     return {
         "name": "EEGDash LLM Tagger API",
-        "version": "1.0.2",
+        "version": "1.0.3",
         "queue_enabled": queue_enabled,
         "endpoints": endpoints
     }

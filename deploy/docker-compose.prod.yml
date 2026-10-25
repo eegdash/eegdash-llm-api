@@ -40,7 +40,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.prod
-    image: eegdash-llm-tagger:1.0.2
+    image: eegdash-llm-tagger:1.0.3
     container_name: tagger-api
     # Internal only — public access is through Caddy (tagger.eegdash.org).
     expose:
@@ -85,7 +85,7 @@ services:
           cpus: "1.0"
 
   worker:
-    image: eegdash-llm-tagger:1.0.2
+    image: eegdash-llm-tagger:1.0.3
     container_name: tagger-worker
     command: ["python", "-m", "src.services.worker"]
     environment:

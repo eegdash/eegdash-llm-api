@@ -15,6 +15,7 @@ from psycopg.conninfo import make_conninfo
 import pytest
 
 from src.services.worker import TaggingWorker
+from src.ingestion import build_enqueue_request
 
 pytestmark = pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"), reason="requires disposable TEST_POSTGRES_URL")
 
@@ -47,6 +48,10 @@ async def test_real_queue_retries_model_and_write_failures_then_completes(tmp_pa
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/v1/chat/completions":
                 state["model_calls"] += 1
+                source = json.loads(payload["messages"][-1]["content"])["dataset"]
+                if source.get("title") == "Fixture":
+                    assert source["task_details"]["visual"]["TaskDescription"] == "View visual faces."
+                    assert "tags" not in source
                 if state["model_calls"] == 1 or state["outage"]:
                     self.reply(503, {"error": "intentional fixture outage"})
                 else:
@@ -79,8 +84,13 @@ async def test_real_queue_retries_model_and_write_failures_then_completes(tmp_pa
     try:
         await worker.initialize()
         worker._queue.RETRY_DELAYS = [0, 0, 0]
-        await worker._queue.enqueue("fixture-dataset", "https://example.invalid/dataset",
-                                   {"title": "Fixture", "readme": "Synthetic healthy visual study."})
+        request = build_enqueue_request({
+            "dataset_id": "fixture-dataset", "source_url": "https://example.invalid/dataset",
+            "name": "Fixture", "readme": "Synthetic healthy visual study.",
+            "task_details": {"visual": {"TaskDescription": "View visual faces."}},
+            "tags": {"pathology": ["Epilepsy"]},
+        })
+        await worker._queue.enqueue(**request)
         for attempt in range(1, 4):
             job = await worker._queue.claim_job("integration-worker")
             assert job is not None and job.attempts == attempt
