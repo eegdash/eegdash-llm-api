@@ -9,11 +9,34 @@ EEGDash API). Runs as a **separate compose project** on the existing
 ## Files
 | File | Purpose |
 |---|---|
-| `Dockerfile.prod` | Prod image — installs `eegdash-tagger` from git, adds `httpx`, bakes in vendored config |
+| `Dockerfile.prod` | Release image — pinned Python digest, locked dependencies and immutable library revision |
 | `docker-compose.prod.yml` | The 3 services; separate cache volumes; **run a single worker** |
 | `.env.prod.example` | Secrets template → copy to `deploy/.env`, `chmod 600` |
-| `vendor-config/` | `few_shot_examples.json` + `prompt.md` baked to `/app/config` (the wheel doesn't ship them) |
+| `vendor-config/` | `few_shot_examples.json` + `prompt.md` at `/app/deploy/vendor-config`, matching v2 and 15 examples |
 | `caddy/tagger.eegdash.org.caddy` | Optional public site block (X-API-Key gate); only if exposing publicly |
+
+Version 1.0.3 is a release candidate; deployment to the existing service is a separate operator action. The HTTP updater prechecks existence, but the server POST is an upsert: concurrent deletion can still lead to insertion. It now requires the server's explicit success envelope and rejects unexpected insertion reports.
+
+## Deployment prerequisites
+
+- Select the immutable service revision and its pinned library before building.
+  The vendored prompt matches library 0.1.2 and the 15 examples are unchanged.
+- The application has no authentication. Keep the loopback bind and trusted
+  internal network, or configure the optional authenticated reverse proxy before
+  exposing any tagging, queue or cache endpoint.
+- Provide the model credential and catalogue administrator token via the
+  environment file, never in the image. Review metadata before model submission;
+  local dataset documentation need not be public.
+- Run one API process and one worker with separate cache volumes. Each JSON cache
+  has one writer; neither shared volumes nor multiple workers are supported.
+- The `eegdash-competition_backend` external Docker network must already exist
+  and reach the catalogue service. On another host, adapt the network and
+  `EEGDASH_API_URL` to an operator-controlled catalogue; this Compose file does
+  not provision that external application.
+- Display new `request_provenance.annotation_origin` and
+  `review_status_at_generation` in a consuming interface, retain source evidence,
+  and record later curator decisions separately. These flags do not backfill the
+  public catalogue or imply human review of historical records.
 
 ## First deploy (on the host)
 ```bash
@@ -65,9 +88,26 @@ docker-compose -p eegdash-llm-tagger -f deploy/docker-compose.prod.yml down -v  
 
 ## Gotchas (read once)
 - **One worker only** — `cache.py` uses a single shared `.tmp` file; multiple writers corrupt the cache.
-- **A failed Mongo write still marks the job `completed`** — monitor `result.mongodb_updated`, not just `status`.
+- **Failed catalogue writes are retried** — the job stays pending until a confirmed write, then fails after three unsuccessful attempts. Check the recorded error.
 - **Cost** — `/api/v1/tag` and `/tag/enqueue` spend the OpenRouter key and have no app-level auth. Cap the key (daily limit) and keep these endpoints internal-only or behind the Caddy X-API-Key gate.
-- **`config_hash`** changes when `vendor-config/few_shot_examples.json` or the model changes, which re-tags on next run.
+- **`config_hash`** includes the effective prompt, loaded examples, model, endpoint, vocabulary and library version. Prompt edits invalidate cache; example edits require restart. Existing completed queue jobs remain deduplicated by metadata; a new configuration does not automatically re-enqueue them.
+
+## Requesting fresh labels after a configuration change
+
+Cache keys include the effective prompt, loaded examples, model and library
+version. Restart API and worker after an update. Completed jobs, however, remain
+unique by dataset and metadata hash; enqueueing unchanged metadata does not
+schedule another model call. Do not alter scientific metadata just to bypass
+that constraint.
+
+For a reviewed candidate, call the synchronous `/api/v1/tag` endpoint with
+`"force_refresh": true`. This obtains fresh labels but does not write the
+catalogue. Inspect its returned source evidence and request provenance before a
+separate authorized persistence step. For a controlled batch retag, use a new
+operator-managed queue database with the corrected version and an empty cache,
+archive the previous queue/results, and enqueue the reviewed metadata snapshots.
+The worker writes catalogue tags, so use that route only when those writes are
+intended; there is no automatic configuration-triggered retag or queue reset.
 
 ## Optional: public HTTPS (`tagger.eegdash.org`)
 Only needed to call the API from outside the host. Add DNS `A tagger.eegdash.org → 169.228.38.92`,

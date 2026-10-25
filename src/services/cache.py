@@ -12,8 +12,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from eegdash_tagger.tagging import OpenRouterTagger
+
 # Sentinel hash for ground truth entries (never invalidated)
 GROUND_TRUTH_HASH = "GROUND_TRUTH"
+
+
+def is_failed_result(result: dict) -> bool:
+    """Reject explicit errors and the known pre-0.1.1 failure envelope.
+
+    Unknown labels or zero confidence alone do not indicate an execution error.
+    """
+    if result.get("error") or result.get("status") == "error":
+        return True
+    reasoning = result.get("reasoning") or {}
+    return isinstance(reasoning, dict) and (
+        bool(reasoning.get("error"))
+        or reasoning.get("decision_summary") == "API call failed"
+    )
 
 
 class TaggingCache:
@@ -97,10 +113,7 @@ class TaggingCache:
             Cache key in format: {dataset_id}:{metadata_hash}:{config_hash}:{model}
         """
         # Filter to relevant metadata fields only
-        relevant_keys = {
-            "title", "dataset_description", "readme",
-            "participants_overview", "tasks", "events", "paper_abstract"
-        }
+        relevant_keys = OpenRouterTagger.RELEVANT_METADATA_KEYS
         filtered = {k: v for k, v in metadata.items() if k in relevant_keys and v}
         metadata_hash = self.compute_hash(filtered)
 
@@ -117,7 +130,8 @@ class TaggingCache:
             Cached result dict or None if not found
         """
         entry = self._cache.get(key)
-        return entry.get("result") if entry else None
+        result = entry.get("result") if entry else None
+        return result if result and not is_failed_result(result) else None
 
     def get_any_for_dataset(self, dataset_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -133,7 +147,7 @@ class TaggingCache:
             Dict with 'result', 'timestamp', and 'stale' flag, or None
         """
         for key, entry in self._cache.items():
-            if key.startswith(f"{dataset_id}:"):
+            if key.startswith(f"{dataset_id}:") and not is_failed_result(entry["result"]):
                 return {
                     "result": entry["result"],
                     "timestamp": entry["timestamp"],
@@ -150,9 +164,11 @@ class TaggingCache:
             result: Tagging result to store
             metadata: Metadata snapshot for debugging
         """
+        if is_failed_result(result):
+            raise ValueError("Failed tagging results cannot be cached")
         self._cache[key] = {
             "result": result,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "metadata_snapshot": metadata
         }
         self._save()
@@ -238,6 +254,8 @@ class TaggingCache:
             result: Ground truth tags (pathology, modality, type, confidence)
         """
         key = f"{dataset_id}:{GROUND_TRUTH_HASH}:{GROUND_TRUTH_HASH}:ground_truth"
+        if is_failed_result(result):
+            raise ValueError("Failed tagging results cannot be cached")
         self._cache[key] = {
             "result": result,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -257,7 +275,7 @@ class TaggingCache:
         """
         key = f"{dataset_id}:{GROUND_TRUTH_HASH}:{GROUND_TRUTH_HASH}:ground_truth"
         entry = self._cache.get(key)
-        if entry and entry.get("is_ground_truth"):
+        if entry and entry.get("is_ground_truth") and not is_failed_result(entry["result"]):
             return entry.get("result")
         return None
 

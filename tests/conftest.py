@@ -51,6 +51,11 @@ def mock_openrouter_tagger(sample_tagging_result):
     """Mock OpenRouterTagger to avoid API calls."""
     mock_tagger = Mock()
     mock_tagger.model = "openai/gpt-4-turbo"
+    mock_tagger.endpoint = "https://example.invalid/chat/completions"
+    mock_tagger.few_shot_examples = []
+    mock_tagger._build_system_prompt.return_value = "test prompt"
+    mock_tagger.max_tokens = 4000
+    mock_tagger._build_request_payload.side_effect = lambda *args: {"model": mock_tagger.model, "max_tokens": mock_tagger.max_tokens, "response_format": {"type": "json_object"}}
     mock_tagger.tag_with_details.return_value = sample_tagging_result
     return mock_tagger
 
@@ -98,6 +103,11 @@ def mock_tagger_class(sample_tagging_result, temp_cache_dir):
     # Mock instance
     mock_instance = Mock()
     mock_instance.model = "openai/gpt-4-turbo"
+    mock_instance.endpoint = "https://example.invalid/chat/completions"
+    mock_instance.few_shot_examples = []
+    mock_instance._build_system_prompt.return_value = "test prompt"
+    mock_instance.max_tokens = 4000
+    mock_instance._build_request_payload.side_effect = lambda *args: {"model": mock_instance.model, "max_tokens": mock_instance.max_tokens, "response_format": {"type": "json_object"}}
     mock_instance.tag_with_details.return_value = sample_tagging_result
     mock_class.return_value = mock_instance
 

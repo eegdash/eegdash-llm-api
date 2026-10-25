@@ -37,3 +37,10 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.ruff_cache/

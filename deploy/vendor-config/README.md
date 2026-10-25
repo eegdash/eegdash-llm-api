@@ -1,10 +1,12 @@
-# Vendored eegdash-tagger config
+# Explicit deployment configuration
 
-`few_shot_examples.json` and `prompt.md` copied from the local eegdash-llm-tagger
-checkout. The tagger wheel/git install does NOT ship these, and the library's default
-paths resolve to a non-existent location when installed non-editably. Dockerfile.prod
-COPYs these to /app/config and compose sets FEW_SHOT_PATH / PROMPT_PATH to point here.
+These files match library 0.1.2: the corrected prompt, version 2 allowed label
+lists and the unchanged 15 examples. The corrected clinical rules apply to new
+calls only; no historical catalogue has been retagged. The production
+Compose file selects them explicitly; the repaired library wheel also includes
+its own default copies. Changing these files changes the effective cache identity
+(the examples are loaded at startup, so restart after editing them).
 
-NOTE: this is the local working copy (may include uncommitted edits) — it defines the
-deployed config_hash. To deploy the repo's committed version instead, re-copy from a
-clean checkout of eegdash-llm-tagger@main.
+Run `tests/test_release_configuration.py` to verify these copies against the
+installed pinned library. The immutable source revision is recorded in
+`pyproject.toml`, `uv.lock` and `requirements.lock`.

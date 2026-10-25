@@ -15,7 +15,7 @@ name: eegdash-llm-tagger
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24
     container_name: tagger-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tagger}
@@ -40,18 +40,24 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.prod
-    image: eegdash-llm-tagger:latest
+    image: eegdash-llm-tagger:1.0.3
     container_name: tagger-api
     # Internal only — public access is through Caddy (tagger.eegdash.org).
     expose:
       - "8000"
+    # Host LOOPBACK bind: lets trusted users reach the API over an SSH tunnel
+    # (ssh -L 8000:localhost:8000 sccn@indexing) without any public exposure.
+    # 127.0.0.1 means it is NOT reachable from the network/internet — only via
+    # the tunnel or on the host itself. Caddy still reaches it by container name.
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-5.2}
       POSTGRES_URL: postgresql://${POSTGRES_USER:-tagger}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-eegdash_queue}
-      # Vendored tagger config baked into the image (the wheel doesn't ship it).
-      FEW_SHOT_PATH: /app/config/few_shot_examples.json
-      PROMPT_PATH: /app/config/prompt.md
+      # Explicit v2 configuration copied from the pinned library release.
+      FEW_SHOT_PATH: /app/deploy/vendor-config/few_shot_examples.json
+      PROMPT_PATH: /app/deploy/vendor-config/prompt.md
       CACHE_DIR: /data/cache
     volumes:
       # Separate cache volume from the worker. cache.py persists via a single
@@ -79,12 +85,12 @@ services:
           cpus: "1.0"
 
   worker:
-    image: eegdash-llm-tagger:latest
+    image: eegdash-llm-tagger:1.0.3
     container_name: tagger-worker
     command: ["python", "-m", "src.services.worker"]
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-5.2}
       POSTGRES_URL: postgresql://${POSTGRES_USER:-tagger}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-eegdash_queue}
       # HTTP write-back to the EEGDash API. Internal service name avoids the
       # public TLS round-trip; override to https://data.eegdash.org if needed.
@@ -93,8 +99,8 @@ services:
       MONGODB_DATABASE: ${MONGODB_DATABASE:-eegdash}
       # Vendored tagger config baked into the image (same files as the api, so the
       # config_hash matches across both).
-      FEW_SHOT_PATH: /app/config/few_shot_examples.json
-      PROMPT_PATH: /app/config/prompt.md
+      FEW_SHOT_PATH: /app/deploy/vendor-config/few_shot_examples.json
+      PROMPT_PATH: /app/deploy/vendor-config/prompt.md
       CACHE_DIR: /data/cache
       WORKER_ID: tagger-worker-1
     volumes:

@@ -1,0 +1,99 @@
+{
+  "coverage": {
+    "covered_lines": 751,
+    "missing_lines": 286,
+    "num_statements": 1037,
+    "percent_covered": 72.42044358727098
+  },
+  "docker": {
+    "api_health": {
+      "cache_entries": 0,
+      "config_hash": "efa33524ef03670c",
+      "queue_enabled": false,
+      "status": "healthy"
+    },
+    "architecture": "amd64",
+    "built_dockerfile": "deploy/Dockerfile.prod",
+    "image_id": "sha256:2cb29322261d7dfd972bc1de72e969f01e9edb370dbb12bb41014b3e591ed06d",
+    "postgres_image": "postgres:15-alpine@sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24",
+    "public_port_exposed": false,
+    "python_base": "python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377",
+    "standard_dockerfile_byte_identical": true
+  },
+  "integration": {
+    "live_model_calls": false,
+    "production_deployment": false,
+    "production_writes": false,
+    "real_postgresql": true,
+    "scenarios": [
+      "provider HTTP failure avoids cache and persistence",
+      "catalogue failure stays pending",
+      "write retry reuses successful inference",
+      "confirmed write completes job",
+      "persistent failure exhausts retry budget",
+      "request provenance and dataset ID survive cache/write"
+    ],
+    "synthetic_loopback_provider_and_catalogue": true,
+    "unique_schema_per_test": true
+  },
+  "library_commit": "65891813b4dcb6c762c9727e032b119c125f2599",
+  "limits": [
+    "Direct MongoDB calls tested with real Collection type but mocked network I/O, not a MongoDB server.",
+    "Catalogue HTTP writes use a synthetic fixture; no production catalogue was modified.",
+    "JSON cache supports one writer per file; API and worker caches must remain separate.",
+    "HTTP existence precheck cannot prevent remote upsert insertion if the document is concurrently deleted.",
+    "Completed queue jobs are deduplicated by metadata, not by updated configuration.",
+    "Provider-reported model identifiers are preserved, not independently verified.",
+    "GitHub Actions workflow added; these results are local/manual container runs."
+  ],
+  "ordinary_install": {
+    "editable": false,
+    "full_suite_import_mode": "importlib",
+    "method": "python -m pip install locally built wheel, with dependency fetched from public Git commit",
+    "tested_outside_checkout": true,
+    "wheel_sha256": "ff7bb46166f26963570e5e7bb8ab120a1f7315a0ba8cf8131adf9507271ed248"
+  },
+  "runs": {
+    "docker": {
+      "environment_report": "docker-environment.json",
+      "errors": 0,
+      "failures": 0,
+      "machine": "x86_64",
+      "python": "3.11.17",
+      "seconds": 2.116,
+      "skipped": 0,
+      "system": "Linux",
+      "test_report": "docker-tests.xml",
+      "tests": 136
+    },
+    "local": {
+      "environment_report": "local-environment.json",
+      "errors": 0,
+      "failures": 0,
+      "machine": "arm64",
+      "python": "3.12.12",
+      "seconds": 19.341,
+      "skipped": 0,
+      "system": "Darwin",
+      "test_report": "local-tests.xml",
+      "tests": 136
+    },
+    "wheel": {
+      "environment_report": "wheel-environment.json",
+      "errors": 0,
+      "failures": 0,
+      "machine": "arm64",
+      "python": "3.12.12",
+      "seconds": 4.027,
+      "skipped": 0,
+      "system": "Darwin",
+      "test_report": "wheel-tests.xml",
+      "tests": 136
+    }
+  },
+  "schema_version": 1,
+  "service_version": "1.0.1",
+  "source_base_commit": "59052ea0b9b6f320f60af1874815d18065b90ca3",
+  "source_revision": "The Git commit containing this report; exact tested source files are in source-sha256.json",
+  "validated_at_utc": "2026-10-24T03:22:33.756088+00:00"
+}

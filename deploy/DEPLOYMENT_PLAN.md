@@ -1,5 +1,13 @@
 # EEGDash LLM Tagger — Deployment Plan (`tagger.eegdash.org` on `indexing`)
 
+> Historical deployment record (June 2026). The version 1.0.1 release candidate
+> supersedes its build/dependency instructions; see [README.md](README.md).
+> This release work did not redeploy or revalidate production. The library now
+> bundles default configuration, dependencies use an immutable commit and lock,
+> and images use the `1.0.1` tag. The HTTP catalogue POST is an upsert: its
+> existence precheck cannot guarantee no insertion under concurrent deletion.
+> Treat the earlier `upsert=false` claim below as superseded by that correction.
+
 **Status: DEPLOYED (2026-06-18) — Layers 1–5 green; only optional public exposure remains.**
 The stack is live on `indexing` (`tagger-postgres`/`tagger-api`/`tagger-worker`, `restart:
 unless-stopped`). The async pipeline was validated end-to-end on production (ds002718 →

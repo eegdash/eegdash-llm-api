@@ -14,6 +14,7 @@ from eegdash_tagger.metadata import build_dataset_summary_from_path
 from eegdash_tagger.scraping import extract_dois_from_references, fetch_abstract_with_cache
 
 from .cache import TaggingCache
+from .config import config_hash_for_tagger
 
 
 class TaggingOrchestrator:
@@ -51,6 +52,7 @@ class TaggingOrchestrator:
         """
         self.tagger = tagger
         self.cache = cache
+        self.cache.config_hash = config_hash_for_tagger(tagger)
         self.allow_on_demand = allow_on_demand
         self.serve_stale_on_error = serve_stale_on_error
         self.clone_timeout = clone_timeout
@@ -100,6 +102,9 @@ class TaggingOrchestrator:
         # Check for sufficient data
         if not metadata.get('readme') and not metadata.get('dataset_description'):
             return self._insufficient_data_response(dataset_id)
+
+        # Use the current effective prompt, including edits since startup.
+        self.cache.config_hash = config_hash_for_tagger(self.tagger)
 
         # Build cache key
         cache_key = self.cache.build_key(
@@ -233,7 +238,8 @@ class TaggingOrchestrator:
             participants_overview=metadata.get('participants_overview', ''),
             tasks=metadata.get('tasks', []),
             events=metadata.get('events', []),
-            paper_abstract=metadata.get('paper_abstract', '')
+            paper_abstract=metadata.get('paper_abstract', ''),
+            task_details=metadata.get('task_details', '')
         )
 
     def _insufficient_data_response(self, dataset_id: str) -> Dict[str, Any]:
