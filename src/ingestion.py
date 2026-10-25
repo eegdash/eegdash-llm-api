@@ -13,6 +13,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 
+def _has_content(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_content(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_content(item) for item in value)
+    return value is not None
+
+
 def build_enqueue_request(dataset: dict[str, Any], *, source_url: str | None = None) -> dict[str, Any]:
     """Map documented source fields without copying catalogue label predictions.
 
@@ -57,11 +67,12 @@ def build_enqueue_request(dataset: dict[str, Any], *, source_url: str | None = N
             raise ValueError(f"{key} must be text")
     for key in ("tasks", "events"):
         if key in snapshot and (not isinstance(snapshot[key], list)
-                                or not all(isinstance(v, str) for v in snapshot[key])):
-            raise ValueError(f"{key} must be a list of strings")
-    if "task_details" in snapshot and not isinstance(snapshot["task_details"], dict):
-        raise ValueError("task_details must be an object")
-    if not snapshot or not any(str(v).strip() for v in snapshot.values()):
+                                or not all(isinstance(v, str) and v.strip() for v in snapshot[key])):
+            raise ValueError(f"{key} must be a list of nonempty strings")
+    if "task_details" in snapshot and (not isinstance(snapshot["task_details"], dict)
+                                       or not _has_content(snapshot["task_details"])):
+        raise ValueError("task_details must be an object with nonempty values")
+    if not _has_content(snapshot):
         raise ValueError("no supported source evidence supplied")
     request = {"dataset_id": dataset_id, "source_url": source, "metadata_snapshot": snapshot}
     # Ensure the queue payload is JSON and cannot contain NaN/Infinity.

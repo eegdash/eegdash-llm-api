@@ -47,6 +47,7 @@ def test_canonical_fields_take_precedence_and_url_override_is_explicit():
     {"source_url": "file:///tmp/a", "external_links": {}},
     {"source_url": "https://user:password@example.invalid", "external_links": {}},
     {"tasks": "not-an-array"}, {"task_details": ["not-an-object"]},
+    {"tasks": [""]}, {"task_details": {"task": {}}},
     {"task_details": {"bad": float("nan")}},
 ])
 def test_invalid_payload_is_rejected(patch):
@@ -58,6 +59,9 @@ def test_no_evidence_is_not_inferred_from_tags_or_population_counts():
     with pytest.raises(ValueError, match="no supported"):
         build_enqueue_request({"dataset_id": "fixture", "source_url": "https://example.invalid",
                                "tags": {"pathology": ["Healthy"]}, "demographics": {"subjects_count": 20}})
+    with pytest.raises(ValueError, match="no supported"):
+        build_enqueue_request({"dataset_id": "fixture", "source_url": "https://example.invalid",
+                               "title": "  "})
 
 
 def test_offline_cli_writes_a_valid_batch_request(tmp_path):
