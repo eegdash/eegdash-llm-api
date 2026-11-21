@@ -1,10 +1,7 @@
 # Production image for the EEGDash LLM Tagger API + worker.
 #
-# Differs from the dev Dockerfile in one important way: it installs the
-# `eegdash-tagger` library from its public GitHub repo instead of the local
-# filesystem path pinned in pyproject.toml (which only exists on a developer's
-# machine). The sed rewrite keeps the dev pyproject untouched while making the
-# image build anywhere.
+# pip ignores [tool.uv.sources], so `eegdash-tagger` installs from the public
+# git URL declared in pyproject.toml (uv dev installs use the sibling checkout).
 FROM python:3.11-slim
 
 # git    -> the sync /api/v1/tag endpoint shallow-clones dataset repos at runtime
@@ -21,10 +18,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-# Rewrite the local-path tagger dependency to the public git URL, then install.
-# Pinned to the main branch; change @main to a tag/commit to freeze the version.
-RUN sed -i -E 's|"eegdash-tagger @ file://[^"]*"|"eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main"|' pyproject.toml && \
-    pip install --no-cache-dir . "httpx>=0.24.0"
+# The tagger tracks @main (see pyproject.toml); pin a tag/commit there to freeze.
+RUN pip install --no-cache-dir . "httpx>=0.24.0"
 # httpx is required at runtime by mongodb_http_updater (worker write-back) but is
 # only listed under pyproject's [dev] extra — install it explicitly here.
 

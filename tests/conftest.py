@@ -1,11 +1,17 @@
 """
 Shared fixtures and mocks for API tests.
 """
-import json
-import pytest
-import tempfile
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+import os
+
+# Must run before any src import: src.api.main calls load_dotenv() at import
+# time, which would leak the developer's .env (e.g. POSTGRES_URL) into tests.
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+import json  # noqa: E402
+import pytest  # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import Mock, patch, MagicMock  # noqa: E402
 
 
 @pytest.fixture
@@ -113,3 +119,16 @@ def mock_tagger_class(sample_tagging_result, temp_cache_dir):
     mock_class.get_default_prompt_path.return_value = prompt_path
 
     return mock_class
+
+
+@pytest.fixture(autouse=True)
+def _unit_test_auth_and_hosts(monkeypatch):
+    """Unit tests use fake github.com/test/ repos and no API key header.
+
+    test_security.py removes these to exercise the real gate and allowlist.
+    """
+    monkeypatch.setenv("TAGGER_ALLOWED_GIT_PREFIXES", "https://github.com/")
+    from src.api.main import app, require_api_key
+    app.dependency_overrides[require_api_key] = lambda: None
+    yield
+    app.dependency_overrides.pop(require_api_key, None)

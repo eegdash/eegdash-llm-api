@@ -47,6 +47,12 @@ services:
       - "8000"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set in .env}
+      # X-API-Key for /tag, /tag/enqueue*, DELETE /cache*. Not a compose-level
+      # requirement (an old .env must not break worker-only commands); if it is
+      # empty the app returns 503 on those routes.
+      TAGGER_API_KEY: ${TAGGER_API_KEY:-}
+      # Optional comma-separated override of the sync /tag clone allowlist.
+      TAGGER_ALLOWED_GIT_PREFIXES: ${TAGGER_ALLOWED_GIT_PREFIXES:-}
       LLM_MODEL: ${LLM_MODEL:-openai/gpt-4-turbo}
       POSTGRES_URL: postgresql://${POSTGRES_USER:-tagger}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-eegdash_queue}
       # Vendored tagger config baked into the image (the wheel doesn't ship it).
@@ -66,6 +72,8 @@ services:
       - internal
       - edge
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 30s
@@ -111,6 +119,8 @@ services:
       - internal
       - edge
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     deploy:
       resources:
         limits:

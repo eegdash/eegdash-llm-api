@@ -7,6 +7,10 @@ services:
       - "8000:8000"
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # X-API-Key for /tag, /tag/enqueue*, DELETE /cache*; empty -> those return 503
+      - TAGGER_API_KEY=${TAGGER_API_KEY:-}
+      # Optional comma-separated override of the sync /tag clone allowlist
+      - TAGGER_ALLOWED_GIT_PREFIXES=${TAGGER_ALLOWED_GIT_PREFIXES:-}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-4-turbo}
       # Cache directory - uses /tmp by default, can be overridden
       - CACHE_DIR=${CACHE_DIR:-/tmp/eegdash-llm-api/cache}

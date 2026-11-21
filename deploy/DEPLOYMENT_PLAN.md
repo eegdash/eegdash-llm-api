@@ -9,7 +9,7 @@ This plan is reconciled against the actual artifacts in `deploy/` (those files a
 source of truth) and incorporates an adversarial gap-review.
 
 ### Decisions taken (as deployed)
-- **Edge auth:** Caddy **`X-API-Key`** gate; enqueue/batch + `DELETE /cache` internal-only. (Not yet wired — gated on DNS.)
+- **Edge auth:** Caddy **`X-API-Key`** gate (must be the same value as `TAGGER_API_KEY`, the app checks the same header); enqueue/batch + `DELETE /cache` internal-only. (Not yet wired — gated on DNS.)
 - **Write-back auth:** reuse **`ADMIN_TOKEN`**. (Investigated: the EEGDash API accepts only
   `ADMIN_TOKEN` or `CI_TOKEN`, both full-privilege — no truly scoped token exists without a
   competition-side code change.)
@@ -53,10 +53,10 @@ stays **server-provided** (user-provided would require new code you've excluded)
   **writes back to the production MongoDB** via the EEGDash admin endpoint. This is the
   only path that mutates real data.
 
-**Build fix (mandatory):** `pyproject.toml` pins `eegdash-tagger` to a `file://` path that
-exists only on a dev laptop. `deploy/Dockerfile.prod` sed-rewrites it to
-`git+https://github.com/eegdash/eegdash-llm-tagger.git@main` so the image builds on any
-host. Both repos are public.
+**Tagger dependency:** `pyproject.toml` declares
+`eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main`, which is what
+pip (and so `deploy/Dockerfile.prod`) installs. `[tool.uv.sources]` points uv at a sibling
+`../eegdash-llm-tagger` checkout for development. Both repos are public.
 
 **Host facts (verified):** Caddy (auto-HTTPS) routes by **container name** on
 `eegdash-competition_backend`; `data.eegdash.org` → `eegdash-api:3000` →
@@ -122,17 +122,18 @@ not just `status`.
 | `DELETE /api/v1/cache` / `…/{key}` | no | **destructive** (wipes cache/ground truth) | **internal-only** |
 | `GET /api/v1/tags/{id}`, `/cache/stats`, `/cache/entries`, `/queue/*`, `/health`, `/` | no | no | read-only (leaks dataset IDs) |
 
-**No endpoint has app-level auth.** Public protection is the Caddy `X-API-Key` gate.
-**Caveat:** any container on `eegdash-competition_backend` can reach `tagger-api:8000`
-directly, bypassing Caddy — so the destructive/SSRF endpoints are reachable by the whole
-production network. That is the real trust boundary; accept it explicitly (§9.4).
+**App-level auth:** `POST /api/v1/tag`, `/tag/enqueue`, `/tag/enqueue/batch` and
+`DELETE /api/v1/cache*` require `X-API-Key: $TAGGER_API_KEY` and return 503 when the key is
+unset (fail closed). `source_url` must be under an allowed git prefix
+(`TAGGER_ALLOWED_GIT_PREFIXES`, default OpenNeuroDatasets / nemarDatasets / nemarOrg on
+GitHub). Containers on `eegdash-competition_backend` that reach `tagger-api:8000` directly
+still need the key; the Caddy `X-API-Key` gate is now a second layer, not the only one.
 
 ---
 
 ## 5. Implementation steps (ordered, each reversible)
 
-0. **Gate (local):** `uv run pytest` (89 pass) + `uv run ruff check .`. Confirm the sed
-   target still exists: `grep -E '"eegdash-tagger @ file://[^"]*"' pyproject.toml`.
+0. **Gate (local):** `uv run --extra dev pytest` (144 pass) + `uv run ruff check .`.
 1. **Get code to host:** `git clone https://github.com/eegdash/eegdash-llm-api.git
    /home/sccn/eegdash-llm-api`, then copy these `deploy/` artifacts over the clone (the
    public repo doesn't have them yet): `Dockerfile.prod`, `docker-compose.prod.yml`,
@@ -140,7 +141,8 @@ production network. That is the real trust boundary; accept it explicitly (§9.4
    a GHCR build so the host just pulls an image.)
 2. **Secrets:** `cp deploy/.env.prod.example deploy/.env && chmod 600 deploy/.env`; fill
    `OPENROUTER_API_KEY` (dedicated capped key), `POSTGRES_PASSWORD` (`openssl rand -base64 32`),
-   `EEGDASH_ADMIN_TOKEN`, `LLM_MODEL`.
+   `EEGDASH_ADMIN_TOKEN`, `LLM_MODEL`, `TAGGER_API_KEY` (`openssl rand -hex 32`; empty means
+   the gated routes return 503).
 3. **Build + verify image** (§7 Layer 2): `docker build -f deploy/Dockerfile.prod -t eegdash-llm-tagger:latest .`
    then `pip show eegdash-tagger` + import checks.
 4. **Bring up (internal):** `docker-compose -p eegdash-llm-tagger -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build`.
@@ -150,7 +152,8 @@ production network. That is the real trust boundary; accept it explicitly (§9.4
 6. **DNS (you):** create `tagger.eegdash.org A 169.228.38.92`; verify `dig +short` from
    host **and** externally **before** the next step.
 7. **Caddy (only after DNS resolves):** back up the Caddyfile, append
-   `deploy/caddy/tagger.eegdash.org.caddy` (set the `X-API-Key`), then `caddy validate` →
+   `deploy/caddy/tagger.eegdash.org.caddy` (set its `X-API-Key` token; it must be the same
+   value as `TAGGER_API_KEY`, since edge and app check one header), then `caddy validate` →
    `caddy reload`. Verify `https://tagger.eegdash.org/health`.
 8. **Consented end-to-end (§7 Layer 5):** enqueue one dataset, watch the worker write back,
    verify in Mongo, keep the revert payload.
@@ -176,9 +179,10 @@ radius with **infra-only** controls (confirmed against current OpenRouter docs):
 4. **ADMIN_TOKEN risk.** The worker's `EEGDASH_ADMIN_TOKEN` is the production write
    credential. **Prefer a separate write-scoped token**; if reused, rotation must be
    co-sequenced with the competition `.env`. It is visible via `docker inspect tagger-worker`.
-5. **SSRF / lateral note.** `POST /api/v1/tag` git-clones an arbitrary `source_url`
-   (server-side fetch). With the edge gate + internal-only enqueue this is bounded, but the
-   shared-network bypass (§4) means it should be signed off, not glossed.
+5. **SSRF / lateral note.** `POST /api/v1/tag` git-clones `source_url` (server-side fetch).
+   The app requires `X-API-Key` and only clones https URLs on an exact allowlisted host and
+   path prefix (no userinfo, port, or dot segments; redirects off). Enqueue never clones, so
+   its `source_url` is not allowlisted.
 
 ---
 
@@ -188,7 +192,7 @@ Six layers; 1–4 mutate nothing, 5 writes one Mongo doc (consent), 6 is rollbac
 
 | Layer | Proves | Mutates prod? | Pass gate |
 |---|---|---|---|
-| 1 Local | code + lint | No | `89 passed`, ruff clean |
+| 1 Local | code + lint | No | `144 passed`, ruff clean |
 | 2 Build | tagger installs from git, imports OK | No | `pip show` git install; import checks OK |
 | 3 Smoke (internal) | stack up, Postgres wired | No | 200 on `/health` `/` `/queue/stats`; `queue_enabled:true`; worker draining |
 | 4 **1-LLM-call prod test** | key + tagger + clone + cache | **No** | 1st call `from_cache:false,error:null`; repeat `from_cache:true` |
@@ -204,9 +208,9 @@ docker logs --tail=30 tagger-worker                              # "started, wai
 
 **Layer 4 — the simple 1-LLM-call production test (NON-DESTRUCTIVE):**
 ```bash
-docker exec tagger-api curl -sS -X POST http://localhost:8000/api/v1/tag \
-  -H 'Content-Type: application/json' \
-  -d '{"dataset_id":"ds002718","source_url":"https://github.com/OpenNeuroDatasets/ds002718.git","force_refresh":false}'
+docker exec tagger-api sh -c 'curl -sS -X POST http://localhost:8000/api/v1/tag \
+  -H "X-API-Key: $TAGGER_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"dataset_id\":\"ds002718\",\"source_url\":\"https://github.com/OpenNeuroDatasets/ds002718.git\",\"force_refresh\":false}"'
 ```
 Expect a `TagResponse` with `pathology/modality/type`, `from_cache:false`, `error:null`
 (30–60s); a repeat returns `from_cache:true` instantly. **No MongoDB write occurs** — the
@@ -240,12 +244,13 @@ can't `$unset`; overwrite-to-empty or remove directly in Mongo (operator decisio
 1. **Code delivery** — *Default: clone repo on host + overlay `deploy/` files + build.*
    Follow-up: commit `deploy/` and add a GHCR Actions build so the host just pulls an image.
 2. **Public exposure & edge auth** — ✅ *CHOSEN: expose `tagger.eegdash.org` behind the
-   Caddy `X-API-Key` gate; keep enqueue/batch + `DELETE /cache` internal-only.*
+   Caddy `X-API-Key` gate (same value as `TAGGER_API_KEY`); keep enqueue/batch +
+   `DELETE /cache` internal-only.*
 3. **OpenRouter key** — *Default: server-provided, dedicated key, daily cap.* (User-provided
    = new code, rejected.) You set the cap value and the model (item 5).
-4. **Shared-network exposure** — *Default: accept that prod containers can reach `tagger-api`
-   unauthenticated (sign-off).* True isolation needs app auth (new code) or editing the
-   competition Caddy/compose (agreed off-limits).
+4. **Shared-network exposure** — prod containers can reach `tagger-api:8000` directly,
+   bypassing Caddy, but the gated routes still need `X-API-Key` (app-level auth). The read
+   routes stay open on that network (sign-off).
 5. **Model + spend cap** — *Default: do NOT silently ship `gpt-4-turbo`.* Pick a current,
    cost-appropriate model and set the OpenRouter daily cap to expected datasets/day.
 6. **ADMIN_TOKEN** — ✅ *CHOSEN: separate write-scoped token for the worker.* Prerequisite

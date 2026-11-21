@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 REST API service that wraps the **`eegdash-tagger`** library to classify EEG/MEG datasets with an LLM (via OpenRouter). It adds caching, a durable job queue, and MongoDB write-back. The tagging logic itself (prompts, few-shot examples, BIDS metadata parsing, abstract scraping) lives in the separate `eegdash-llm-tagger` repo — this service orchestrates it.
 
-> **Critical dependency**: `pyproject.toml` pins `eegdash-tagger @ file:///Users/kuntalkokate/neuroscience_work/eegdash-llm-tagger` — an absolute local path. The library must be checked out at that location (or the path edited) for installs to work. Symbols imported from it: `OpenRouterTagger`, `ParsedMetadata`, `build_dataset_summary_from_path`, `extract_dois_from_references`, `fetch_abstract_with_cache`.
+> **Critical dependency**: `pyproject.toml` declares `eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main` (what pip installs), and `[tool.uv.sources]` overrides it with an editable `../eegdash-llm-tagger` checkout for uv. Clone the tagger next to this repo for `uv run` to work. Symbols imported from it: `OpenRouterTagger`, `ParsedMetadata`, `build_dataset_summary_from_path`, `extract_dois_from_references`, `fetch_abstract_with_cache`.
 
 ## Commands
 
@@ -87,12 +87,12 @@ Scripts add the repo root to `sys.path` and import `from src.services...`, so ru
 
 ## Environment variables
 
-`OPENROUTER_API_KEY` is the only hard requirement for the API (startup raises without it). `LLM_MODEL` defaults to `openai/gpt-4-turbo`. `POSTGRES_URL` enables the async queue. The worker needs Postgres + either HTTP (`EEGDASH_API_URL`/`EEGDASH_ADMIN_TOKEN`) or direct (`MONGODB_URL`) Mongo creds. `FEW_SHOT_PATH`/`PROMPT_PATH` override the library's bundled config files. See the README's "Environment Variables Reference" table for the full list; `.env` is loaded automatically (`load_dotenv()`) and is gitignored.
+`OPENROUTER_API_KEY` is the only hard requirement for the API (startup raises without it). `TAGGER_API_KEY` gates `POST /api/v1/tag`, `/tag/enqueue*` and `DELETE /api/v1/cache*` via the `X-API-Key` header; unset, those routes return 503. `TAGGER_ALLOWED_GIT_PREFIXES` (comma-separated) overrides the `source_url` allowlist in `orchestrator.py`. Unit tests bypass both through an autouse fixture in `tests/conftest.py`. `LLM_MODEL` defaults to `openai/gpt-4-turbo`. `POSTGRES_URL` enables the async queue. The worker needs Postgres + either HTTP (`EEGDASH_API_URL`/`EEGDASH_ADMIN_TOKEN`) or direct (`MONGODB_URL`) Mongo creds. `FEW_SHOT_PATH`/`PROMPT_PATH` override the library's bundled config files. See the README's "Environment Variables Reference" table for the full list; `.env` is loaded automatically (`load_dotenv()`) and is gitignored.
 
 ## Production deployment (`deploy/`)
 
 The full stack runs on the `indexing` host as a separate compose project. Artifacts and docs live in `deploy/`:
 - **`deploy/README.md`** — concise deploy + day-to-day usage commands.
 - **`deploy/DEPLOYMENT_PLAN.md`** — architecture, security model, and layered test plan.
-- **`deploy/Dockerfile.prod`** — the dev `pyproject.toml` pins `eegdash-tagger` to a local `file://` path; this image **sed-rewrites it to the public git URL**, COPYs `README.md` (hatchling requires it), installs `httpx` (a runtime dep only listed under `[dev]`), and bakes in `deploy/vendor-config/{few_shot_examples.json,prompt.md}` (the tagger wheel doesn't ship them and its default paths break when installed non-editably). When changing build/runtime deps or the bundled config, keep these in sync.
+- **`deploy/Dockerfile.prod`** — installs `eegdash-tagger` from the git URL in `pyproject.toml` (pip ignores `[tool.uv.sources]`), COPYs `README.md` (hatchling requires it), installs `httpx` (a runtime dep only listed under `[dev]`), and bakes in `deploy/vendor-config/{few_shot_examples.json,prompt.md}` (the tagger wheel doesn't ship them and its default paths break when installed non-editably). When changing build/runtime deps or the bundled config, keep these in sync.
 - **`deploy/docker-compose.prod.yml`** — postgres + api + worker on the external `eegdash-competition_backend` network; **api and worker use separate cache volumes and you must run a single worker** (`cache.py` writes through one shared `.tmp` filename, so concurrent writers corrupt the cache).

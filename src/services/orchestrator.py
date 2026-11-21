@@ -4,16 +4,87 @@ Main workflow orchestration for tagging.
 This module coordinates the tagging workflow with cache-first strategy.
 """
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import urlsplit
 
 from eegdash_tagger.tagging import OpenRouterTagger, ParsedMetadata
 from eegdash_tagger.metadata import build_dataset_summary_from_path
 from eegdash_tagger.scraping import extract_dois_from_references, fetch_abstract_with_cache
 
 from .cache import TaggingCache
+
+
+# Git hosts the tagger may clone from. Override with a comma-separated
+# TAGGER_ALLOWED_GIT_PREFIXES (e.g. for a mirror); anything else is rejected
+# so the API cannot be used to clone arbitrary URLs.
+DEFAULT_ALLOWED_GIT_PREFIXES = (
+    "https://github.com/OpenNeuroDatasets/",
+    "https://github.com/nemarDatasets/",
+    "https://github.com/nemarOrg/",
+)
+_DATASET_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+
+
+def _split_https_url(url: str):
+    """Return ``(host, [path segments])`` for a plain https URL, else None.
+
+    Rejects userinfo, explicit ports, query/fragment and dot segments
+    (literal or percent-encoded), so the host we compare is the host git
+    actually connects to.
+    """
+    if not url or any(c.isspace() or c == "\\" for c in url):
+        return None
+    lowered = url.lower()
+    if ".." in url or "%2e" in lowered:
+        return None
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        return None
+    if parts.username is not None or parts.password is not None or port is not None:
+        return None
+    if "@" in parts.netloc or parts.query or parts.fragment:
+        return None
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if any(seg == "." for seg in segments):
+        return None
+    return parts.hostname.lower(), [seg.lower() for seg in segments]
+
+
+def _allowed_prefixes():
+    raw = os.getenv("TAGGER_ALLOWED_GIT_PREFIXES")
+    prefixes = [p.strip() for p in raw.split(",")] if raw else DEFAULT_ALLOWED_GIT_PREFIXES
+    return [split for split in map(_split_https_url, prefixes) if split]
+
+
+def is_allowed_source_url(url: str) -> bool:
+    """True if ``url`` is an https URL on an allowed host, under an allowed path.
+
+    Host match is exact (case-insensitive); the path must start with the
+    prefix's full path segments and name at least one more segment.
+    """
+    split = _split_https_url(url)
+    if split is None:
+        return False
+    host, segments = split
+    return any(
+        host == p_host
+        and len(segments) > len(p_segments)
+        and segments[: len(p_segments)] == p_segments
+        for p_host, p_segments in _allowed_prefixes()
+    )
+
+
+def is_valid_dataset_id(dataset_id: str) -> bool:
+    """Dataset ids become directory names, so no separators or ``..``."""
+    return bool(_DATASET_ID_RE.fullmatch(dataset_id)) and ".." not in dataset_id
 
 
 class TaggingOrchestrator:
@@ -174,12 +245,20 @@ class TaggingOrchestrator:
         Raises:
             RuntimeError: If clone fails
         """
+        if not is_allowed_source_url(source_url):
+            raise RuntimeError(f"source_url not in allowed git hosts: {source_url}")
+        if not is_valid_dataset_id(dataset_id):
+            raise RuntimeError(f"invalid dataset_id: {dataset_id!r}")
         repo_path = os.path.join(tmpdir, dataset_id)
         env = os.environ.copy()
         env['GIT_LFS_SKIP_SMUDGE'] = '1'
+        env['GIT_TERMINAL_PROMPT'] = '0'
 
         result = subprocess.run(
-            ['git', 'clone', '--depth', '1', source_url, repo_path],
+            [
+                'git', '-c', 'http.followRedirects=false',
+                'clone', '--depth', '1', '--', source_url, repo_path,
+            ],
             env=env,
             capture_output=True,
             timeout=self.clone_timeout
