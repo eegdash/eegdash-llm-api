@@ -14,17 +14,22 @@ load_dotenv()
 
 import os
 import hashlib
+import secrets
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, Any
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, field_validator
 
 from eegdash_tagger.tagging import OpenRouterTagger
 
 from ..services.cache import TaggingCache
-from ..services.orchestrator import TaggingOrchestrator
+from ..services.orchestrator import (
+    TaggingOrchestrator,
+    is_allowed_source_url,
+    is_valid_dataset_id,
+)
 from ..services.queue import TaggingQueue
 
 
@@ -138,12 +143,44 @@ app = FastAPI(
 )
 
 
+def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    """Gate LLM-spending and destructive routes behind ``TAGGER_API_KEY``.
+
+    Fails closed: if the key is not configured, the protected routes are off.
+    """
+    expected = os.getenv("TAGGER_API_KEY")
+    if not expected:
+        raise HTTPException(status_code=503, detail="TAGGER_API_KEY is not configured")
+    if not x_api_key or not secrets.compare_digest(
+        x_api_key.encode(), expected.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+
 # Request/Response Models
 
-class TagRequest(BaseModel):
-    """Request model for tagging a dataset."""
+class _DatasetSource(BaseModel):
+    """Shared validation: dataset_id is a path component, source_url gets cloned."""
     dataset_id: str
     source_url: str
+
+    @field_validator("dataset_id")
+    @classmethod
+    def _check_dataset_id(cls, v: str) -> str:
+        if not is_valid_dataset_id(v):
+            raise ValueError("dataset_id may only contain letters, digits, '_', '.', '-'")
+        return v
+
+    @field_validator("source_url")
+    @classmethod
+    def _check_source_url(cls, v: str) -> str:
+        if not is_allowed_source_url(v):
+            raise ValueError("source_url is not under an allowed git host")
+        return v
+
+
+class TagRequest(_DatasetSource):
+    """Request model for tagging a dataset."""
     force_refresh: bool = False
 
 
@@ -179,10 +216,8 @@ class HealthResponse(BaseModel):
 
 # Queue Request/Response Models (for async tagging)
 
-class EnqueueRequest(BaseModel):
+class EnqueueRequest(_DatasetSource):
     """Request model for enqueueing a tagging job."""
-    dataset_id: str
-    source_url: str
     metadata_snapshot: dict[str, Any]  # Pre-extracted metadata from ingestion
 
 
@@ -229,7 +264,7 @@ class JobStatusResponse(BaseModel):
 
 # API Endpoints
 
-@app.post("/api/v1/tag", response_model=TagResponse)
+@app.post("/api/v1/tag", response_model=TagResponse, dependencies=[Depends(require_api_key)])
 async def tag_dataset(req: TagRequest):
     """
     Tag a dataset with LLM classification.
@@ -328,7 +363,7 @@ async def list_cache_entries(dataset_id: Optional[str] = None):
     return cache.list_entries(dataset_id=dataset_id)
 
 
-@app.delete("/api/v1/cache")
+@app.delete("/api/v1/cache", dependencies=[Depends(require_api_key)])
 async def clear_cache():
     """
     Clear entire cache.
@@ -340,7 +375,7 @@ async def clear_cache():
     return {"status": "cleared", "message": "Cache has been cleared"}
 
 
-@app.delete("/api/v1/cache/{cache_key:path}")
+@app.delete("/api/v1/cache/{cache_key:path}", dependencies=[Depends(require_api_key)])
 async def delete_cache_entry(cache_key: str):
     """
     Delete a specific cache entry.
@@ -414,7 +449,11 @@ async def root():
 # Queue Endpoints (Async Tagging)
 # =============================================================================
 
-@app.post("/api/v1/tag/enqueue", response_model=EnqueueResponse)
+@app.post(
+    "/api/v1/tag/enqueue",
+    response_model=EnqueueResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def enqueue_tagging_job(req: EnqueueRequest):
     """
     Enqueue a dataset for async tagging (fire-and-forget).
@@ -451,7 +490,11 @@ async def enqueue_tagging_job(req: EnqueueRequest):
     )
 
 
-@app.post("/api/v1/tag/enqueue/batch", response_model=BatchEnqueueResponse)
+@app.post(
+    "/api/v1/tag/enqueue/batch",
+    response_model=BatchEnqueueResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def enqueue_batch(req: BatchEnqueueRequest):
     """
     Enqueue multiple datasets for async tagging.

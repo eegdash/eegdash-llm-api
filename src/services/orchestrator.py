@@ -4,6 +4,7 @@ Main workflow orchestration for tagging.
 This module coordinates the tagging workflow with cache-first strategy.
 """
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +15,31 @@ from eegdash_tagger.metadata import build_dataset_summary_from_path
 from eegdash_tagger.scraping import extract_dois_from_references, fetch_abstract_with_cache
 
 from .cache import TaggingCache
+
+
+# Git hosts the tagger may clone from. Override with a comma-separated
+# TAGGER_ALLOWED_GIT_PREFIXES (e.g. for a mirror); anything else is rejected
+# so the API cannot be used to clone arbitrary URLs.
+DEFAULT_ALLOWED_GIT_PREFIXES = (
+    "https://github.com/OpenNeuroDatasets/",
+    "https://github.com/nemarDatasets/",
+    "https://github.com/nemarOrg/",
+)
+_DATASET_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def is_allowed_source_url(url: str) -> bool:
+    """True if ``url`` is an https URL under an allowed git prefix."""
+    raw = os.getenv("TAGGER_ALLOWED_GIT_PREFIXES")
+    prefixes = [p.strip() for p in raw.split(",")] if raw else DEFAULT_ALLOWED_GIT_PREFIXES
+    if ".." in url or any(c.isspace() for c in url):
+        return False
+    return any(p and url.lower().startswith(p.lower()) for p in prefixes)
+
+
+def is_valid_dataset_id(dataset_id: str) -> bool:
+    """Dataset ids become directory names, so no separators or ``..``."""
+    return bool(_DATASET_ID_RE.match(dataset_id)) and ".." not in dataset_id
 
 
 class TaggingOrchestrator:
@@ -174,6 +200,10 @@ class TaggingOrchestrator:
         Raises:
             RuntimeError: If clone fails
         """
+        if not is_allowed_source_url(source_url):
+            raise RuntimeError(f"source_url not in allowed git hosts: {source_url}")
+        if not is_valid_dataset_id(dataset_id):
+            raise RuntimeError(f"invalid dataset_id: {dataset_id!r}")
         repo_path = os.path.join(tmpdir, dataset_id)
         env = os.environ.copy()
         env['GIT_LFS_SKIP_SMUDGE'] = '1'

@@ -113,3 +113,16 @@ def mock_tagger_class(sample_tagging_result, temp_cache_dir):
     mock_class.get_default_prompt_path.return_value = prompt_path
 
     return mock_class
+
+
+@pytest.fixture(autouse=True)
+def _unit_test_auth_and_hosts(monkeypatch):
+    """Unit tests use fake github.com/test/ repos and no API key header.
+
+    test_security.py removes these to exercise the real gate and allowlist.
+    """
+    monkeypatch.setenv("TAGGER_ALLOWED_GIT_PREFIXES", "https://github.com/")
+    from src.api.main import app, require_api_key
+    app.dependency_overrides[require_api_key] = lambda: None
+    yield
+    app.dependency_overrides.pop(require_api_key, None)

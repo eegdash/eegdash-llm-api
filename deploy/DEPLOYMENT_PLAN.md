@@ -53,10 +53,10 @@ stays **server-provided** (user-provided would require new code you've excluded)
   **writes back to the production MongoDB** via the EEGDash admin endpoint. This is the
   only path that mutates real data.
 
-**Build fix (mandatory):** `pyproject.toml` pins `eegdash-tagger` to a `file://` path that
-exists only on a dev laptop. `deploy/Dockerfile.prod` sed-rewrites it to
-`git+https://github.com/eegdash/eegdash-llm-tagger.git@main` so the image builds on any
-host. Both repos are public.
+**Tagger dependency:** `pyproject.toml` declares
+`eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main`, which is what
+pip (and so `deploy/Dockerfile.prod`) installs. `[tool.uv.sources]` points uv at a sibling
+`../eegdash-llm-tagger` checkout for development. Both repos are public.
 
 **Host facts (verified):** Caddy (auto-HTTPS) routes by **container name** on
 `eegdash-competition_backend`; `data.eegdash.org` → `eegdash-api:3000` →
@@ -122,17 +122,18 @@ not just `status`.
 | `DELETE /api/v1/cache` / `…/{key}` | no | **destructive** (wipes cache/ground truth) | **internal-only** |
 | `GET /api/v1/tags/{id}`, `/cache/stats`, `/cache/entries`, `/queue/*`, `/health`, `/` | no | no | read-only (leaks dataset IDs) |
 
-**No endpoint has app-level auth.** Public protection is the Caddy `X-API-Key` gate.
-**Caveat:** any container on `eegdash-competition_backend` can reach `tagger-api:8000`
-directly, bypassing Caddy — so the destructive/SSRF endpoints are reachable by the whole
-production network. That is the real trust boundary; accept it explicitly (§9.4).
+**App-level auth:** `POST /api/v1/tag`, `/tag/enqueue`, `/tag/enqueue/batch` and
+`DELETE /api/v1/cache*` require `X-API-Key: $TAGGER_API_KEY` and return 503 when the key is
+unset (fail closed). `source_url` must be under an allowed git prefix
+(`TAGGER_ALLOWED_GIT_PREFIXES`, default OpenNeuroDatasets / nemarDatasets / nemarOrg on
+GitHub). Containers on `eegdash-competition_backend` that reach `tagger-api:8000` directly
+still need the key; the Caddy `X-API-Key` gate is now a second layer, not the only one.
 
 ---
 
 ## 5. Implementation steps (ordered, each reversible)
 
-0. **Gate (local):** `uv run pytest` (89 pass) + `uv run ruff check .`. Confirm the sed
-   target still exists: `grep -E '"eegdash-tagger @ file://[^"]*"' pyproject.toml`.
+0. **Gate (local):** `uv run --extra dev pytest` (118 pass) + `uv run ruff check .`.
 1. **Get code to host:** `git clone https://github.com/eegdash/eegdash-llm-api.git
    /home/sccn/eegdash-llm-api`, then copy these `deploy/` artifacts over the clone (the
    public repo doesn't have them yet): `Dockerfile.prod`, `docker-compose.prod.yml`,

@@ -773,6 +773,8 @@ The `MongoDBHttpUpdater` only depends on `httpx` and the standard library, so it
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter.ai API key |
+| `TAGGER_API_KEY` | Yes (for tagging / cache deletion) | - | Required `X-API-Key` for `POST /api/v1/tag`, `/tag/enqueue*`, `DELETE /api/v1/cache*`; those routes return 503 when unset |
+| `TAGGER_ALLOWED_GIT_PREFIXES` | No | OpenNeuroDatasets, nemarDatasets, nemarOrg on GitHub | Comma-separated URL prefixes `source_url` must start with |
 | `LLM_MODEL` | No | `openai/gpt-4-turbo` | LLM model to use |
 | `CACHE_DIR` | No | `/tmp/eegdash-llm-api/cache` | Cache directory path |
 | `FEW_SHOT_PATH` | No | (library default) | Override few-shot examples path |

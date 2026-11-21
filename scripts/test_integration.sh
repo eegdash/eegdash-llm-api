@@ -55,6 +55,7 @@ echo "=== Tagging ds002718 (small dataset) ==="
 echo "This will make a real LLM API call and may take 30-60 seconds..."
 
 TAG_RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/tag \
+  -H "X-API-Key: ${TAGGER_API_KEY:?export TAGGER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "dataset_id": "ds002718",
@@ -80,6 +81,7 @@ fi
 echo ""
 echo "=== Testing cache (second request should be cached) ==="
 TAG_RESPONSE2=$(curl -s -X POST http://localhost:8000/api/v1/tag \
+  -H "X-API-Key: ${TAGGER_API_KEY:?export TAGGER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "dataset_id": "ds002718",
@@ -103,6 +105,7 @@ echo "Cache stats: $STATS"
 echo ""
 echo "=== Testing force_refresh ==="
 TAG_RESPONSE3=$(curl -s -X POST http://localhost:8000/api/v1/tag \
+  -H "X-API-Key: ${TAGGER_API_KEY:?export TAGGER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
     "dataset_id": "ds002718",

@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "API service for EEGDash LLM Tagger with caching and orchestration"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.11.5"
 authors = [
     { name = "EEGDash Team" }
 ]
@@ -29,10 +29,18 @@ dependencies = [
     "pydantic>=2.0.0",
     # Queue and database
     "psycopg[binary]>=3.1.0",  # Postgres driver (async-capable)
-    "pymongo>=4.6.0",          # MongoDB driver for tag updates
-    # Local path for development (use git URL for production after pushing changes)
-    "eegdash-tagger @ file:///Users/kuntalkokate/neuroscience_work/eegdash-llm-tagger",
+    "pymongo>=4.18.3",         # MongoDB driver for tag updates (BSON GHSA floor)
+    # pip installs from git; uv (dev) uses the sibling checkout below.
+    "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main",
     "python-dotenv>=1.2.1",
+    # Security floors for transitive deps (GHSA advisories, Nov 2026 review).
+    # deploy/Dockerfile.prod resolves fresh with pip, so these are what bind.
+    "anyio>=4.14.2",
+    "starlette>=1.3.1",
+    "certifi>=2026.10.18",
+    "urllib3>=2.8.0",
+    "dnspython>=2.9.2",
+    "soupsieve>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +54,10 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/eegdash/eegdash-llm-api"
 Repository = "https://github.com/eegdash/eegdash-llm-api"
+
+[tool.uv.sources]
+# Expects eegdash-llm-tagger cloned next to this repo.
+eegdash-tagger = { path = "../eegdash-llm-tagger", editable = true }
 
 [tool.hatch.metadata]
 allow-direct-references = true
