@@ -50,15 +50,27 @@ tagger.eegdash.org {
   @noauth not header X-API-Key "REPLACE_WITH_LONG_RANDOM_TOKEN"
   respond @noauth "Forbidden" 403
 
+  # Destructive and bulk routes stay internal-only (DEPLOYMENT_PLAN): the
+  # tagging key alone must not wipe the cache or queue thousands of LLM jobs
+  # from the internet. Operators use them via docker exec on the host.
+  @internal_only {
+    method DELETE
+  }
+  respond @internal_only "Forbidden" 403
+  @internal_paths path /api/v1/tag/enqueue /api/v1/tag/enqueue/*
+  respond @internal_paths "Forbidden" 403
+
   reverse_proxy tagger-api:8000 {
     health_uri /health
     health_interval 30s
     health_timeout 5s
 
-    # Sync /api/v1/tag clones a repo + calls the LLM (can take 30-60s).
+    # Sync /api/v1/tag clones a repo (up to 120s) + calls the LLM (up to
+    # LLM_TIMEOUT=300s) and may wait behind another tag; keep the edge above
+    # the client's 300s budget so finished, paid-for tags are not 504'd.
     transport http {
-      read_timeout 120s
-      write_timeout 120s
+      read_timeout 330s
+      write_timeout 330s
     }
 
     header_up X-Real-IP {remote_host}
@@ -72,6 +84,9 @@ tagger.eegdash.org {
       roll_keep 5
     }
     # Request headers are logged; redact the API key so it never hits disk.
+    # This filter covers the ACCESS log only. Caddy's error log (5xx, e.g. 502
+    # during a restart) also records request headers: add the same filter to
+    # the host Caddyfile's global `log default { format filter ... }`.
     format filter {
       wrap json
       fields {
