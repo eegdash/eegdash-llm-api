@@ -23,7 +23,8 @@ cp deploy/.env.prod.example deploy/.env && chmod 600 deploy/.env   # then fill i
 docker-compose -p eegdash-llm-tagger -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build
 ```
 Required in `deploy/.env`: `OPENROUTER_API_KEY` (use a dedicated, **daily-capped** key),
-`POSTGRES_PASSWORD` (`openssl rand -base64 32`), `EEGDASH_ADMIN_TOKEN`, `LLM_MODEL`.
+`POSTGRES_PASSWORD` (`openssl rand -base64 32`), `EEGDASH_ADMIN_TOKEN`, `LLM_MODEL`,
+`TAGGER_API_KEY` (`openssl rand -hex 32`; left empty, the gated routes return 503).
 
 ## Everyday use
 The API is **internal-only** (reachable on the docker network) unless Caddy is wired, so run
@@ -34,15 +35,16 @@ these on the host. `tagger-api` is reached by name from any container on the sha
 docker exec caddy wget -qO- http://tagger-api:8000/health
 docker exec tagger-api curl -sS http://localhost:8000/api/v1/queue/stats
 
+# Gated routes need X-API-Key; `sh -c '...'` expands $TAGGER_API_KEY inside the container.
 # Tag ONE dataset synchronously — real LLM call, does NOT write to MongoDB (safe smoke test)
-docker exec tagger-api curl -sS -X POST http://localhost:8000/api/v1/tag \
-  -H 'Content-Type: application/json' \
-  -d '{"dataset_id":"ds002718","source_url":"https://github.com/OpenNeuroDatasets/ds002718.git"}'
+docker exec tagger-api sh -c 'curl -sS -X POST http://localhost:8000/api/v1/tag \
+  -H "X-API-Key: $TAGGER_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"dataset_id\":\"ds002718\",\"source_url\":\"https://github.com/OpenNeuroDatasets/ds002718.git\"}"'
 
 # Async: enqueue → worker tags → WRITES tags+tagger_meta to MongoDB
-docker exec tagger-api curl -sS -X POST http://localhost:8000/api/v1/tag/enqueue \
-  -H 'Content-Type: application/json' \
-  -d '{"dataset_id":"dsXXXXXX","source_url":"https://github.com/OpenNeuroDatasets/dsXXXXXX.git","metadata_snapshot":{"title":"...","readme":"..."}}'
+docker exec tagger-api sh -c 'curl -sS -X POST http://localhost:8000/api/v1/tag/enqueue \
+  -H "X-API-Key: $TAGGER_API_KEY" -H "Content-Type: application/json" \
+  -d "{\"dataset_id\":\"dsXXXXXX\",\"source_url\":\"https://openneuro.org/datasets/dsXXXXXX\",\"metadata_snapshot\":{\"title\":\"...\",\"readme\":\"...\"}}"'
 
 # Bulk-enqueue datasets from the EEGDash API (worker drains them)
 docker exec tagger-api python scripts/enqueue_all_datasets.py --help   # --limit N, --dry-run, --skip-ground-truth
@@ -66,10 +68,11 @@ docker-compose -p eegdash-llm-tagger -f deploy/docker-compose.prod.yml down -v  
 ## Gotchas (read once)
 - **One worker only** — `cache.py` uses a single shared `.tmp` file; multiple writers corrupt the cache.
 - **A failed Mongo write still marks the job `completed`** — monitor `result.mongodb_updated`, not just `status`.
-- **Cost** — `/api/v1/tag` and `/tag/enqueue` spend the OpenRouter key and have no app-level auth. Cap the key (daily limit) and keep these endpoints internal-only or behind the Caddy X-API-Key gate.
+- **Cost** — `/api/v1/tag` and `/tag/enqueue` spend the OpenRouter key. The app requires `X-API-Key: $TAGGER_API_KEY` on them (503 if unset); still cap the key (daily limit) and keep enqueue internal-only. The Caddy edge gate checks the same header, so its token must be the same value as `TAGGER_API_KEY`.
 - **`config_hash`** changes when `vendor-config/few_shot_examples.json` or the model changes, which re-tags on next run.
 
 ## Optional: public HTTPS (`tagger.eegdash.org`)
 Only needed to call the API from outside the host. Add DNS `A tagger.eegdash.org → 169.228.38.92`,
-then append `caddy/tagger.eegdash.org.caddy` (set a real `X-API-Key`) to the host Caddyfile and
+then append `caddy/tagger.eegdash.org.caddy` (set its `X-API-Key` token to the same value as
+`TAGGER_API_KEY`) to the host Caddyfile and
 `caddy validate && caddy reload`. The internal batch workflow above needs none of this.

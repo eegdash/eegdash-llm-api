@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi>=0.100.0",
+    "fastapi>=0.165.0",  # FastAPI(max_body_size=...)
     "uvicorn[standard]>=0.23.0",
     "pydantic>=2.0.0",
     # Queue and database
@@ -32,7 +32,7 @@ dependencies = [
     "pymongo>=4.18.3",         # MongoDB driver for tag updates (BSON GHSA floor)
     # pip installs from git; uv (dev) uses the sibling checkout below.
     "eegdash-tagger @ git+https://github.com/eegdash/eegdash-llm-tagger.git@main",
-    "python-dotenv>=1.2.1",
+    "python-dotenv>=1.2.2",
     # Security floors for transitive deps (GHSA advisories, Nov 2026 review).
     # deploy/Dockerfile.prod resolves fresh with pip, so these are what bind.
     "anyio>=4.14.2",
@@ -41,6 +41,8 @@ dependencies = [
     "urllib3>=2.8.0",
     "dnspython>=2.9.2",
     "soupsieve>=4.0.0",
+    "requests>=2.33.0",
+    "idna>=3.15",
 ]
 
 [project.optional-dependencies]

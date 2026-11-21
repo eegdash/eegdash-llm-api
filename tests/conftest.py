@@ -1,11 +1,17 @@
 """
 Shared fixtures and mocks for API tests.
 """
-import json
-import pytest
-import tempfile
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+import os
+
+# Must run before any src import: src.api.main calls load_dotenv() at import
+# time, which would leak the developer's .env (e.g. POSTGRES_URL) into tests.
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+import json  # noqa: E402
+import pytest  # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import Mock, patch, MagicMock  # noqa: E402
 
 
 @pytest.fixture

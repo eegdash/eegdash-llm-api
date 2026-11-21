@@ -11,9 +11,11 @@
 # A failed `validate` must NOT be reloaded; the running config stays live either way.
 #
 # EDGE AUTH (important): /api/v1/tag and /tag/enqueue spend the server's OpenRouter
-# key, and DELETE /api/v1/cache wipes the cache — all unauthenticated in the app.
-# The X-API-Key gate below blocks anonymous internet abuse (mirrors the Grafana
-# basicauth pattern already on this host). Set a strong key: openssl rand -hex 32.
+# key, and DELETE /api/v1/cache wipes the cache. The app gates those routes on the
+# X-API-Key header (TAGGER_API_KEY); the edge gate below checks the SAME header and
+# drops anonymous traffic before it reaches the app. Because both check one header,
+# the token here must be the same value as TAGGER_API_KEY in deploy/.env, or every
+# gated call fails one of the two checks.
 # NOTE: this gates the PUBLIC path only; containers on eegdash-competition_backend
 # can still reach tagger-api:8000 directly, bypassing Caddy (accepted trust boundary).
 
@@ -42,7 +44,8 @@ tagger.eegdash.org {
   respond @no_host 400
 
   # --- Edge API-key gate (stock Caddy, no plugin) ---
-  # Replace REPLACE_WITH_LONG_RANDOM_TOKEN. Callers must send: X-API-Key: <token>.
+  # Replace REPLACE_WITH_LONG_RANDOM_TOKEN with the same value as TAGGER_API_KEY
+  # (deploy/.env). Callers must send: X-API-Key: <token>.
   # To use HTTP basic-auth instead (like /grafana), swap this for a basic_auth block.
   @noauth not header X-API-Key "REPLACE_WITH_LONG_RANDOM_TOKEN"
   respond @noauth "Forbidden" 403
@@ -68,6 +71,12 @@ tagger.eegdash.org {
       roll_size 100mb
       roll_keep 5
     }
-    format json
+    # Request headers are logged; redact the API key so it never hits disk.
+    format filter {
+      wrap json
+      fields {
+        request>headers>X-Api-Key replace REDACTED
+      }
+    }
   }
 }

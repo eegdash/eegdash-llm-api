@@ -8,7 +8,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy dependency files first for better caching
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 
 # Install dependencies (includes eegdash-llm-tagger library with bundled configs)
 RUN pip install --no-cache-dir -e .

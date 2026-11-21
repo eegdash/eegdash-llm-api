@@ -12,6 +12,7 @@ Supports two modes:
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 import os
 import hashlib
 import secrets
@@ -21,6 +22,7 @@ from typing import Optional, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from eegdash_tagger.tagging import OpenRouterTagger
 
@@ -66,6 +68,14 @@ orchestrator: Optional[TaggingOrchestrator] = None
 cache: Optional[TaggingCache] = None
 queue: Optional[TaggingQueue] = None
 queue_enabled: bool = False
+
+# Sync tagging runs in a worker thread; TaggingCache writes through one shared
+# .tmp file without a lock, so only one orchestrator.tag() may run at a time.
+_tag_lock = asyncio.Lock()
+
+# Reject oversized bodies before they are parsed (the API key check is a
+# route dependency, so it only runs after the body has been read).
+MAX_BODY_SIZE = 4 * 1024 * 1024
 
 
 @asynccontextmanager
@@ -139,7 +149,8 @@ app = FastAPI(
     title="EEGDash LLM Tagger API",
     description="REST API for tagging EEG/MEG datasets with LLM-based classification",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    max_body_size=MAX_BODY_SIZE,
 )
 
 
@@ -160,7 +171,7 @@ def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
 # Request/Response Models
 
 class _DatasetSource(BaseModel):
-    """Shared validation: dataset_id is a path component, source_url gets cloned."""
+    """Shared validation: dataset_id becomes a path component."""
     dataset_id: str
     source_url: str
 
@@ -171,17 +182,17 @@ class _DatasetSource(BaseModel):
             raise ValueError("dataset_id may only contain letters, digits, '_', '.', '-'")
         return v
 
+
+class TagRequest(_DatasetSource):
+    """Request model for tagging a dataset (sync: source_url gets cloned)."""
+    force_refresh: bool = False
+
     @field_validator("source_url")
     @classmethod
     def _check_source_url(cls, v: str) -> str:
         if not is_allowed_source_url(v):
             raise ValueError("source_url is not under an allowed git host")
         return v
-
-
-class TagRequest(_DatasetSource):
-    """Request model for tagging a dataset."""
-    force_refresh: bool = False
 
 
 class TagResponse(BaseModel):
@@ -217,7 +228,12 @@ class HealthResponse(BaseModel):
 # Queue Request/Response Models (for async tagging)
 
 class EnqueueRequest(_DatasetSource):
-    """Request model for enqueueing a tagging job."""
+    """Request model for enqueueing a tagging job.
+
+    The worker tags from ``metadata_snapshot`` and never clones, so
+    ``source_url`` is not held to the clone allowlist (it is usually a
+    nemar.org / openneuro.org landing page).
+    """
     metadata_snapshot: dict[str, Any]  # Pre-extracted metadata from ingestion
 
 
@@ -278,11 +294,13 @@ async def tag_dataset(req: TagRequest):
         TagResponse with classification results
     """
     try:
-        result = orchestrator.tag(
-            dataset_id=req.dataset_id,
-            source_url=req.source_url,
-            force_refresh=req.force_refresh
-        )
+        async with _tag_lock:
+            result = await run_in_threadpool(
+                orchestrator.tag,
+                dataset_id=req.dataset_id,
+                source_url=req.source_url,
+                force_refresh=req.force_refresh,
+            )
         return TagResponse(
             dataset_id=req.dataset_id,
             pathology=result.get('pathology', ['Unknown']),
